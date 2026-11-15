@@ -390,21 +390,26 @@ class CameraInternalBridge:
 
     def scan_usb_and_serial_devices(self) -> Dict[str, Any]:
         """
-        Probes macOS USB tree (`system_profiler SPUSBDataType`) and `/dev/cu.*` serial devices
+        Probes macOS IOKit USB registry (`ioreg -r -c IOUSBHostDevice`) and `/dev/cu.*` serial devices
         to detect any USB-connected DJI Osmo Pocket 3, Pocket 4 Pro, or DJI Mic receiver.
         """
         usb_matches: List[str] = []
         serial_ports: List[str] = []
+        detected_product = ""
         try:
             proc = subprocess.run(
-                ["system_profiler", "SPUSBDataType"],
+                ["ioreg", "-r", "-c", "IOUSBHostDevice", "-l"],
                 capture_output=True,
                 text=True,
                 timeout=4,
             )
             for line in (proc.stdout or "").splitlines():
-                if any(k in line for k in ["DJI", "Osmo", "Pocket", "Vendor ID: 0x2ca3"]):
-                    usb_matches.append(line.strip())
+                if '"USB Product Name"' in line and any(k in line for k in ["Osmo", "Pocket", "DJI"]):
+                    val = line.split("=", 1)[-1].strip().strip('"')
+                    if val not in usb_matches:
+                        usb_matches.append(val)
+                    if "Pocket" in val or "Osmo" in val:
+                        detected_product = val
         except Exception:
             pass
 
@@ -417,9 +422,74 @@ class CameraInternalBridge:
 
         return {
             "usb_dji_entries": usb_matches,
+            "detected_camera_product": detected_product,
             "serial_ports": serial_ports,
-            "camera_usb_connected": any("Pocket" in m or "Osmo" in m or "usbmodem" in s for m in usb_matches for s in serial_ports + [""]),
+            "camera_usb_connected": bool(detected_product) or any("Pocket" in m or "Osmo" in m for m in usb_matches),
         }
+
+    def query_live_usb_camera_info(self) -> Dict[str, Any]:
+        """
+        Communicates directly with a USB-connected DJI Osmo Pocket 3 / Pocket 4 Pro
+        over USB Interface #4 (`EP OUT 0x04`, `EP IN 0x85`) using DUML v1 packets
+        to read real-time firmware version, Wi-Fi SSID, and password.
+        """
+        try:
+            import ctypes.util
+            os.environ.setdefault("DYLD_LIBRARY_PATH", "/opt/homebrew/lib")
+            import usb.core
+            import usb.util
+        except Exception as e:
+            return {"connected": False, "error": f"pyusb not available: {e}"}
+
+        dev = usb.core.find(idVendor=0x2CA3)
+        if dev is None:
+            return {"connected": False}
+
+        info: Dict[str, Any] = {
+            "connected": True,
+            "vendor_id": f"0x{dev.idVendor:04x}",
+            "product_id": f"0x{dev.idProduct:04x}",
+        }
+        try:
+            info["product_name"] = usb.util.get_string(dev, dev.iProduct) or "OsmoPocket"
+            info["serial_number"] = usb.util.get_string(dev, dev.iSerialNumber) or ""
+        except Exception:
+            info["product_name"] = "OsmoPocket4P"
+
+        try:
+            usb.util.claim_interface(dev, 4)
+            # Send Get SSID (0x07, 0x07) and Get Password (0x07, 0x0E) to Wi-Fi module (7,0)
+            pkt_ssid = build_duml_packet(10, 1, 7, 0, 0x07, 0x07, b"", seq=8801, cmd_type=0x40)
+            pkt_pwd = build_duml_packet(10, 1, 7, 0, 0x07, 0x0E, b"", seq=8802, cmd_type=0x40)
+            dev.write(0x04, pkt_ssid, timeout=200)
+            dev.write(0x04, pkt_pwd, timeout=200)
+
+            for _ in range(10):
+                try:
+                    raw = bytes(dev.read(0x85, 1024, timeout=120))
+                    idx = 0
+                    while idx + 13 <= len(raw):
+                        if raw[idx] != 0x55:
+                            idx += 1
+                            continue
+                        length = (raw[idx + 1] | (raw[idx + 2] << 8)) & 0x3FF
+                        if length < 13 or idx + length > len(raw):
+                            break
+                        frame = raw[idx : idx + length]
+                        cs, cid = frame[9], frame[10]
+                        pl = frame[11:-2]
+                        if cs == 0x07 and cid == 0x07 and len(pl) > 2 and pl[0] == 0:
+                            info["wifi_ssid"] = pl[2 : 2 + pl[1]].decode("utf-8", errors="ignore")
+                        elif cs == 0x07 and cid == 0x0E and len(pl) > 2 and pl[0] == 0:
+                            info["wifi_password"] = pl[2 : 2 + pl[1]].decode("utf-8", errors="ignore")
+                        idx += length
+                except Exception:
+                    pass
+            usb.util.release_interface(dev, 4)
+        except Exception as e:
+            info["duml_note"] = str(e)
+
+        return info
 
     def probe_live_camera(self, ip: str, timeout: float = 0.35) -> Dict[str, Any]:
         """
@@ -472,9 +542,24 @@ class CameraInternalBridge:
         duml_pkt = build_sta_wifi_connect_payload(ssid, password or "coffee123456", lan_ip)
         duml_hex = duml_pkt.hex(" ").upper()
 
-        # Try sending UDP DUML packet to camera if reachable on 192.168.2.1 (AP) or target LAN IP
+        # Try sending DUML packet directly over USB Interface #4 (EP OUT 0x04) if camera is plugged in via USB-C
+        usb_sent = False
+        try:
+            os.environ.setdefault("DYLD_LIBRARY_PATH", "/opt/homebrew/lib")
+            import usb.core
+            import usb.util
+            dev = usb.core.find(idVendor=0x2CA3)
+            if dev is not None:
+                usb.util.claim_interface(dev, 4)
+                dev.write(0x04, duml_pkt, timeout=250)
+                usb.util.release_interface(dev, 4)
+                usb_sent = True
+        except Exception:
+            pass
+
+        # Also try sending UDP DUML packet if reachable on 192.168.2.1 (AP), 192.168.42.2 (RNDIS), or target LAN IP
         udp_sent_to = None
-        for candidate_ip in ["192.168.2.1", lan_ip]:
+        for candidate_ip in ["192.168.2.1", "192.168.42.2", lan_ip]:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(0.2)
             try:
@@ -498,7 +583,7 @@ class CameraInternalBridge:
         log_entry = {
             "time": datetime.now().strftime("%H:%M:%S"),
             "target": f"{device_id} ({lan_ip})",
-            "cmd": f"DUML [07:47] STA Join '{ssid}' + Deploy /data/local/tmp/pocket_sta_agent.sh",
+            "cmd": f"DUML [07:47] STA Join '{ssid}' (USB_EP04={usb_sent}) + Deploy /data/local/tmp/pocket_sta_agent.sh",
             "output": f"Packet ({len(duml_pkt)}B): {duml_hex[:47]}... | STA Locked @ {lan_ip}",
         }
         state.setdefault("command_log", []).insert(0, log_entry)
@@ -511,6 +596,7 @@ class CameraInternalBridge:
             "lan_ip": lan_ip,
             "ssid": ssid,
             "duml_packet_hex": duml_hex,
+            "usb_dispatched": usb_sent,
             "udp_dispatched_to": udp_sent_to,
             "camera": cam,
             "log_entry": log_entry,
@@ -582,6 +668,21 @@ class CameraInternalBridge:
         pkt = build_camera_shutter_packet(start=is_start)
         ip = cam["lan_ip"]
 
+        # Send over USB Interface #4 EP 0x04 if camera is connected via USB-C
+        usb_sent = False
+        try:
+            os.environ.setdefault("DYLD_LIBRARY_PATH", "/opt/homebrew/lib")
+            import usb.core
+            import usb.util
+            dev = usb.core.find(idVendor=0x2CA3)
+            if dev is not None:
+                usb.util.claim_interface(dev, 4)
+                dev.write(0x04, pkt, timeout=200)
+                usb.util.release_interface(dev, 4)
+                usb_sent = True
+        except Exception:
+            pass
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(0.15)
         try:
@@ -596,8 +697,8 @@ class CameraInternalBridge:
 
         log_entry = {
             "time": datetime.now().strftime("%H:%M:%S"),
-            "target": f"{device_id} ({ip}:9004)",
-            "cmd": f"DUML [02:02] LAN Shutter {'START (0x01)' if is_start else 'STOP (0x00)'}",
+            "target": f"{device_id} ({ip}:9004 / USB_EP04={usb_sent})",
+            "cmd": f"DUML [02:02] Shutter {'START (0x01)' if is_start else 'STOP (0x00)'}",
             "output": f"Sent {len(pkt)}B DUML frame ({pkt.hex(' ').upper()}) -> state={cam['recording_state']}",
         }
         state.setdefault("command_log", []).insert(0, log_entry)

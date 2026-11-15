@@ -1,0 +1,86 @@
+{
+  "equipment": {
+    "default_grinder_type": "额外独立磨豆机",
+    "default_grinder_model": "Niche Zero (63mm 锥刀)",
+    "secondary_grinder_type": "咖啡机自带磨豆机",
+    "secondary_grinder_model": "Breville 铂富内置锥刀磨豆机",
+    "espresso_machine": "Breville / 变压意式咖啡机",
+    "default_water_temp_c": 93.0,
+    "default_pressure_bar": 9.0,
+    "auto_fill_default_grinder": true,
+    "single_camera_auto_switch": true
+  },
+  "beans": [
+    {
+      "bean_id": "bean-huakui",
+      "short_aliases": [
+        "花魁",
+        "花魁7.0",
+        "罕贝拉"
+      ],
+      "full_name": "埃塞俄比亚 罕贝拉 花魁 7.0 日晒",
+      "origin": "埃塞俄比亚 · 古吉罕贝拉",
+      "process": "日晒 (Natural)",
+      "roast_level": "中浅烘焙",
+      "flavor_tags": [
+        "佛手柑",
+        "热带百香果",
+        "草莓果酱",
+        "奶油太妃糖"
+      ],
+      "recommended_grind": "刻度 14.5 格",
+      "recommended_dose_g": 18.5,
+      "recommended_ratio": "1:2.0",
+      "golden_recipe_note": "Niche 刻度 14.5 | 18.5g -> 37g | 29s @ 9.2 bar",
+      "remaining_weight_g": 185.0
+    },
+    {
+      "bean_id": "bean-geisha",
+      "short_aliases": [
+        "瑰夏",
+        "绿标瑰夏",
+        "红标瑰夏",
+        "翡翠庄园"
+      ],
+      "full_name": "巴拿马 翡翠庄园 绿标瑰夏 水洗",
+      "origin": "巴拿马 · 波奎特 (Boquete)",
+      "process": "水洗 (Washed)",
+      "roast_level": "浅度烘焙",
+      "flavor_tags": [
+        "茉莉白花",
+        "佛手柑",
+        "水蜜桃汁",
+        "蜂蜜红茶尾韵"
+      ],
+      "recommended_grind": "刻度 13.5 格 (意式) / 刻度 58 格 (冷萃)",
+      "recommended_dose_g": 18.0,
+      "recommended_ratio": "1:2.2",
+      "golden_recipe_note": "意式 93°C 18g->40g 27s | 冷萃 45g->405ml 12h",
+      "remaining_weight_g": 140.0
+    },
+    {
+      "bean_id": "bean-paraiso",
+      "short_aliases": [
+        "天堂庄园",
+        "哥伦比亚",
+        "双重厌氧"
+      ],
+      "full_name": "哥伦比亚 考卡山谷 天堂庄园 双重厌氧水洗",
+      "origin": "哥伦比亚 · 考卡 (Cauca)",
+      "process": "双重厌氧水洗",
+      "roast_level": "中浅烘焙",
+      "flavor_tags": [
+        "水蜜桃酸奶",
+        "玫瑰花露",
+        "白桃乌龙",
+        "丝滑奶油"
+      ],
+      "recommended_grind": "刻度 14.0 格",
+      "recommended_dose_g": 18.0,
+      "recommended_ratio": "1:1.9",
+      "golden_recipe_note": "搭配冰博克制作 Dirty 绝佳，刻度 14.0 流速最稳",
+      "remaining_weight_g": 210.0
+    }
+  ],
+  "taste_feedback_history": []
+}
