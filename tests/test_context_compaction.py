@@ -64,6 +64,37 @@ class TestContextCompactionAndModularity(unittest.TestCase):
         self.assertIsNotNone(reg.get("camera_driver", "mock_sta"))
         self.assertIn("mock_sta", reg.summary()["camera_driver"])
 
+    def test_bean_library_shorthand_and_taste_feedback_loop(self) -> None:
+        from core.bean_equipment_store import BeanAndEquipmentManager
+        from core.camera_sta_bridge import CameraInternalBridge
+        from core.notifier import NotificationManager
+        from core.store import CoffeeStore
+        from daemon.voice_session import VoiceWakeupSessionManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = CoffeeStore(tmpdir)
+            bridge = CameraInternalBridge(tmpdir)
+            notifier = NotificationManager(tmpdir)
+            notifier.save_config({"enable_macos_banner": False})
+            vm = VoiceWakeupSessionManager(store, bridge, notifier)
+
+            # User only says shorthand "今天用花魁" without mentioning grinder model or roast level
+            res = vm.stop_and_process(
+                reason="测试豆库简称匹配与默认磨豆机补全",
+                override_transcript="我要开始制作咖啡。今天用花魁，称重 18.5 克，刻度 14.5 格，做意式浓缩，9.2 bar 萃取 29 秒，出液 37 克。制作完成。",
+            )
+            rec_dict = res["record"]
+            self.assertIn("罕贝拉 花魁 7.0", rec_dict["bean_name"])
+            self.assertEqual(rec_dict["bean_roast"], "中浅烘焙")
+            self.assertEqual(rec_dict["grinder_type"], "额外独立磨豆机")
+            self.assertIn("Niche Zero", rec_dict["grinder_model"])
+            self.assertEqual(rec_dict["status"], "complete")
+
+            # Apply subjective taste feedback ("too_sour") and verify adaptive calibration advice
+            bean_mgr = BeanAndEquipmentManager(tmpdir)
+            fb = bean_mgr.apply_taste_feedback(rec_dict, rating=4, taste_tag="too_sour", user_note="入口稍微有一点点尖酸")
+            self.assertIn("往细微调", fb["calibration_advice"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -205,9 +205,30 @@ def extract_parameters_from_transcript(
     if temp_m:
         rec.water_temp_c = float(temp_m.group(1))
 
-    # Apply visual overrides if detected from camera frames
+    # Apply Bean Library shorthand match (e.g., user just says "今天用花魁" -> fills full origin, roast, flavor notes)
     if visual_Overrides:
+        bean_match = visual_Overrides.get("_bean_library_match")
+        if isinstance(bean_match, dict):
+            rec.bean_name = bean_match.get("full_name") or rec.bean_name
+            if not rec.bean_roast and bean_match.get("roast_level"):
+                rec.bean_roast = bean_match["roast_level"]
+            if not rec.grind_setting and bean_match.get("recommended_grind") and visual_Overrides.get("_auto_fill_bean_grind"):
+                rec.grind_setting = bean_match["recommended_grind"]
+            if bean_match.get("flavor_tags"):
+                rec.flavor_notes = list(bean_match["flavor_tags"])
+
+        equip_defaults = visual_Overrides.get("_equipment_defaults")
+        if isinstance(equip_defaults, dict) and equip_defaults.get("auto_fill_default_grinder", True):
+            if not rec.grinder_type:
+                rec.grinder_type = equip_defaults.get("default_grinder_type", "额外独立磨豆机")
+            if not rec.grinder_model:
+                rec.grinder_model = equip_defaults.get("default_grinder_model", "Niche Zero (63mm 锥刀)")
+            if not rec.water_temp_c and equip_defaults.get("default_water_temp_c"):
+                rec.water_temp_c = float(equip_defaults["default_water_temp_c"])
+
         for k, v in visual_Overrides.items():
+            if k.startswith("_"):
+                continue
             if getattr(rec, k, None) is None and v is not None:
                 setattr(rec, k, v)
 

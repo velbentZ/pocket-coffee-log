@@ -388,6 +388,39 @@ class CameraInternalBridge:
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
 
+    def scan_usb_and_serial_devices(self) -> Dict[str, Any]:
+        """
+        Probes macOS USB tree (`system_profiler SPUSBDataType`) and `/dev/cu.*` serial devices
+        to detect any USB-connected DJI Osmo Pocket 3, Pocket 4 Pro, or DJI Mic receiver.
+        """
+        usb_matches: List[str] = []
+        serial_ports: List[str] = []
+        try:
+            proc = subprocess.run(
+                ["system_profiler", "SPUSBDataType"],
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            for line in (proc.stdout or "").splitlines():
+                if any(k in line for k in ["DJI", "Osmo", "Pocket", "Vendor ID: 0x2ca3"]):
+                    usb_matches.append(line.strip())
+        except Exception:
+            pass
+
+        try:
+            for dev in os.listdir("/dev"):
+                if dev.startswith("cu.") and ("DJI" in dev or "usbmodem" in dev or "usbserial" in dev):
+                    serial_ports.append(f"/dev/{dev}")
+        except Exception:
+            pass
+
+        return {
+            "usb_dji_entries": usb_matches,
+            "serial_ports": serial_ports,
+            "camera_usb_connected": any("Pocket" in m or "Osmo" in m or "usbmodem" in s for m in usb_matches for s in serial_ports + [""]),
+        }
+
     def probe_live_camera(self, ip: str, timeout: float = 0.35) -> Dict[str, Any]:
         """
         Probes a target LAN IP for open DJI / ADB / HTTP / RTSP ports.

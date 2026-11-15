@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from core.analyzer import enrich_barista_analysis, extract_parameters_from_transcript
+from core.bean_equipment_store import BeanAndEquipmentManager
 from core.camera_sta_bridge import CameraInternalBridge
 from core.context_engine import SessionContextCompactor
 from core.models import CoffeeRecord
@@ -33,6 +34,7 @@ class VoiceWakeupSessionManager:
         self.camera_bridge = camera_bridge
         self.notifier = notifier
         self.compactor = SessionContextCompactor()
+        self.bean_manager = BeanAndEquipmentManager(store.data_dir)
         self.active_session: Dict[str, Any] = {
             "session_id": f"sess-{datetime.now().strftime('%H%M%S')}",
             "state": "standby_listening",  # "standby_listening" | "recording" | "processing"
@@ -137,18 +139,29 @@ class VoiceWakeupSessionManager:
 
         compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
 
-        # 3. Build CoffeeRecord from canonical parameters (preserving self-corrections)
+        # 3. Match against Personal Bean Library & Default Equipment Presets
+        lib_data = self.bean_manager.load_all()
+        matched_bean = self.bean_manager.match_bean_by_text(full_transcript)
+        overrides: Dict[str, Any] = dict(compacted.canonical_parameters)
+        if matched_bean:
+            overrides["_bean_library_match"] = matched_bean
+        if lib_data.get("equipment"):
+            overrides["_equipment_defaults"] = lib_data["equipment"]
+
+        # 4. Build CoffeeRecord from canonical parameters + Bean Library + Equipment Defaults
         video_file = f"/storage/sdcard0/DCIM/DJI_001/DJI_{datetime.now().strftime('%Y%m%d_%H%M%S')}.MP4"
         record = extract_parameters_from_transcript(
             transcript=full_transcript,
             camera_device=model,
             video_path=video_file,
-            visual_Overrides=compacted.canonical_parameters,
+            visual_Overrides=overrides,
         )
         # Ensure canonical overridden values (e.g. from self-corrections) take precedence
         for k, v in compacted.canonical_parameters.items():
             if v is not None and hasattr(record, k):
                 setattr(record, k, v)
+        if matched_bean and matched_bean.get("full_name"):
+            record.bean_name = matched_bean["full_name"]
         record.compute_derived_metrics()
         enrich_barista_analysis(record)
         self.store.save_record(record)

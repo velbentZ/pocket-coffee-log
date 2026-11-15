@@ -25,8 +25,10 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from core.analyzer import enrich_barista_analysis, extract_parameters_from_transcript
+from core.bean_equipment_store import BeanAndEquipmentManager
 from core.camera_sta_bridge import CameraInternalBridge
 from core.context_engine import ProjectMemoryManager, SessionContextCompactor
+from core.multimodal_vision import MultimodalVisionEngine
 from core.notifier import NotificationManager
 from core.registry import global_event_bus, global_registry
 from core.store import CoffeeStore
@@ -39,14 +41,18 @@ STATIC_DIR = os.path.join(PROJECT_ROOT, "static")
 store = CoffeeStore(DATA_DIR)
 camera_bridge = CameraInternalBridge(DATA_DIR)
 notifier = NotificationManager(DATA_DIR)
+bean_manager = BeanAndEquipmentManager(DATA_DIR)
+vision_engine = MultimodalVisionEngine(DATA_DIR)
 voice_manager = VoiceWakeupSessionManager(store, camera_bridge, notifier)
 memory_manager = ProjectMemoryManager(PROJECT_ROOT)
 compactor = SessionContextCompactor()
 
 # Register core modules in global ModuleRegistry
-global_registry.register("camera_driver", "dji_duml_sta", camera_bridge, {"models": ["Pocket 3", "Pocket 4 Pro"]})
+global_registry.register("camera_driver", "dji_duml_sta", camera_bridge, {"models": ["Pocket 3", "Pocket 4 Pro"], "mode": "single_active_rotation"})
 global_registry.register("extractor", "multimodal_cn_regex", extract_parameters_from_transcript, {"lossless": True})
+global_registry.register("extractor", "whisper_vlm_keyframes", vision_engine, {"vlm": vision_engine.vlm_provider})
 global_registry.register("advisor", "barista_flavor_advisor", enrich_barista_analysis, {"radar_axes": 6})
+global_registry.register("advisor", "bean_equipment_feedback_loop", bean_manager, {"subjective_calibration": True})
 global_registry.register("notifier", "multi_channel_dispatcher", notifier, {"channels": ["WeCom", "ServerChan", "Bark", "Feishu"]})
 
 # Ensure initial notifications are seeded for the sample records if history is empty
@@ -101,12 +107,18 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 "records": records,
                 "voice_session": voice_manager.get_status(),
                 "camera_sta": cam_state,
+                "usb_status": camera_bridge.scan_usb_and_serial_devices(),
+                "bean_library": bean_manager.load_all(),
                 "on_camera_script": agent_script,
                 "notifications": notifier.get_history(),
                 "notification_config": notifier.load_config(),
                 "module_registry": global_registry.summary(),
                 "context_snapshot": memory_manager.build_current_snapshot(),
             })
+            return
+
+        if path == "/api/camera/usb_probe":
+            self._send_json({"ok": True, **camera_bridge.scan_usb_and_serial_devices()})
             return
 
         if path == "/api/context/snapshot":
@@ -239,6 +251,34 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 override_transcript=transcript,
             )
             self._send_json({"ok": True, "webhook_processed": True, **res})
+            return
+
+        if path == "/api/beans/save":
+            bean_entry = bean_manager.add_or_update_bean(body)
+            self._send_json({"ok": True, "bean": bean_entry, "bean_library": bean_manager.load_all()})
+            return
+
+        if path == "/api/equipment/save":
+            lib_data = bean_manager.load_all()
+            lib_data["equipment"] = {**lib_data.get("equipment", {}), **body}
+            bean_manager.save_all(lib_data)
+            self._send_json({"ok": True, "equipment": lib_data["equipment"]})
+            return
+
+        if path == "/api/records/feedback":
+            record_id = body.get("record_id", "")
+            rec = store.get_record(record_id)
+            if not rec:
+                self._send_json({"ok": False, "error": "Record not found"}, status=404)
+                return
+            rating = int(body.get("rating", 5))
+            taste_tag = body.get("taste_tag", "balanced_sweet")
+            user_note = body.get("user_note", "")
+            fb = bean_manager.apply_taste_feedback(rec.to_dict(), rating, taste_tag, user_note)
+            # Prepend the subjective calibration advice directly into the record's suggestions
+            rec.suggestions.insert(0, fb["calibration_advice"])
+            store.save_record(rec)
+            self._send_json({"ok": True, "feedback": fb, "record": rec.to_dict()})
             return
 
         if path == "/api/notifications/config":

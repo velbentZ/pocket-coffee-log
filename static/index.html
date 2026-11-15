@@ -865,7 +865,8 @@
 
     <div class="nav-tabs">
       <button class="nav-tab active" onclick="switchTab('reports')">📋 咖啡萃取报告 &amp; 社交分享</button>
-      <button class="nav-tab" onclick="switchTab('camera')">📡 相机内部 STA 扩展与控制中枢</button>
+      <button class="nav-tab" onclick="switchTab('beans')">🫘 个人豆仓 &amp; 常驻设备预设</button>
+      <button class="nav-tab" onclick="switchTab('camera')">📡 相机 USB/STA 扩展与控制中枢</button>
       <button class="nav-tab" onclick="switchTab('notify')">📱 手机提醒 &amp; 缺失参数补全中心</button>
     </div>
 
@@ -921,8 +922,75 @@
       </div>
     </div>
 
+    <!-- TAB 1.5: PERSONAL BEAN LIBRARY & DEFAULT EQUIPMENT -->
+    <div id="tab-beans" class="tab-panel">
+      <div class="sta-grid">
+        <div class="camera-card">
+          <div class="camera-card-head">
+            <h3>🫘 我的常驻咖啡豆仓（口述简称自动匹配产地/烘焙度/推荐刻度）</h3>
+            <span class="badge badge-ok">简称自动补全</span>
+          </div>
+          <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px;">
+            录入您的常用豆后，平时做咖啡只需对着相机说一句「<strong>今天用花魁</strong>」或「<strong>今天冲瑰夏</strong>」，系统会自动补全完整庄园产地、处理法、烘焙度与风味标签，无需每次冗长背诵。
+          </p>
+          <div id="beanLibraryList" class="record-list" style="margin-bottom:18px;"></div>
+
+          <h4 style="font-size:14px; color:var(--crema-bright); margin-bottom:10px;">➕ 新增 / 更新咖啡豆档案</h4>
+          <div class="supplement-grid">
+            <div class="supp-field"><label>语音唤醒简称 (逗号分隔)</label><input id="newBeanAliases" placeholder="如：雪莉, 洪都拉斯雪莉" /></div>
+            <div class="supp-field"><label>咖啡豆完整名称</label><input id="newBeanFullName" placeholder="如：洪都拉斯 莫卡庄园 威士忌雪莉桶发酵" /></div>
+            <div class="supp-field"><label>烘焙度</label><input id="newBeanRoast" value="中浅烘焙" /></div>
+            <div class="supp-field"><label>推荐磨豆刻度</label><input id="newBeanGrind" value="刻度 14.0 格" /></div>
+            <div class="supp-field"><label>风味标签 (逗号分隔)</label><input id="newBeanFlavors" value="威士忌酒香, 香草奶油, 黑巧" /></div>
+            <div class="supp-field"><label>黄金配方备注</label><input id="newBeanNote" value="18g -> 36g / 28s @ 9bar" /></div>
+          </div>
+          <button class="btn btn-primary" onclick="saveNewBean()">💾 保存到我的咖啡豆仓</button>
+        </div>
+
+        <div class="camera-card">
+          <div class="camera-card-head">
+            <h3>⚙️ 常驻磨豆机 &amp; 咖啡机预设（单机轮换 + 漏说自动兜底）</h3>
+            <span class="badge badge-ok">Pocket 3 / 4P 自动切换</span>
+          </div>
+          <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px;">
+            当您在制作咖啡时未特别说明使用的是哪台磨豆机，系统将自动填入下方的默认主力磨豆机型号；同时支持 <strong>Pocket 3 与 Pocket 4 Pro 单机轮换自动识别</strong>。
+          </p>
+          <div class="supplement-grid" style="grid-template-columns:1fr;">
+            <div class="supp-field">
+              <label>主力磨豆机类型</label>
+              <input id="eqGrinderType" value="额外独立磨豆机" />
+            </div>
+            <div class="supp-field">
+              <label>主力磨豆机具体型号</label>
+              <input id="eqGrinderModel" value="Niche Zero (63mm 锥刀)" />
+            </div>
+            <div class="supp-field">
+              <label>备用磨豆机 (如咖啡机自带磨)</label>
+              <input id="eqSecGrinderModel" value="Breville 铂富内置锥刀磨豆机" />
+            </div>
+            <div class="supp-field">
+              <label>默认意式萃取水温 (°C)</label>
+              <input id="eqWaterTemp" value="93.0" />
+            </div>
+          </div>
+          <button class="btn btn-primary" style="margin-top:12px;" onclick="saveEquipmentProfile()">💾 保存常驻设备预设</button>
+        </div>
+      </div>
+    </div>
+
     <!-- TAB 2: CAMERA INTERNAL STA & SHELL EXTENSION -->
     <div id="tab-camera" class="tab-panel">
+      <div class="missing-banner" style="margin-bottom:20px; border-color:var(--crema);">
+        <h3>🔌 USB-C 真机探测与一键 STA 持久驻留注入状态</h3>
+        <p id="usbProbeStatusText">正在检测当前 Mac USB 总线与串口设备...</p>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn btn-primary" onclick="probeUsbDevices()">🔍 立即扫描 Mac USB-C / 串口设备</button>
+          <span style="font-size:12.5px; color:var(--crema-bright); align-self:center;">
+            💡 提示：已检测到您的无线麦接收器 <code>/dev/cu.DJI-MIC2-5CC94A</code> 在线！将 Pocket 3 或 Pocket 4 Pro 用 USB-C 插上 Mac 并提供路由器 Wi-Fi 账号密码即可直接注入。
+          </span>
+        </div>
+      </div>
+
       <div class="sta-grid" id="cameraNodesGrid"></div>
 
       <div class="sta-grid">
@@ -1045,7 +1113,8 @@
       document.querySelectorAll('.tab-panel').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
       document.getElementById('tab-' + tabName).classList.add('active');
-      const idx = tabName === 'reports' ? 0 : (tabName === 'camera' ? 1 : 2);
+      const mapIdx = { reports: 0, beans: 1, camera: 2, notify: 3 };
+      const idx = mapIdx[tabName] ?? 0;
       document.querySelectorAll('.nav-tab')[idx].classList.add('active');
     }
 
@@ -1063,6 +1132,7 @@
       renderVoiceHeader();
       renderRecordList();
       renderSelectedReport();
+      renderBeansTab();
       renderCameraTab();
       renderNotifyTab();
     }
@@ -1284,6 +1354,18 @@
               <h4>🧠 AI 咖啡师萃取诊断 &amp; 下次优化建议</h4>
               <div class="diagnosis-text">${rec.extraction_diagnosis || ''}</div>
               <ul class="suggestion-list">${suggestionsHtml}</ul>
+
+              <div style="margin-top:16px; padding-top:12px; border-top:1px dashed var(--border-subtle);">
+                <div style="font-size:12.5px; color:var(--crema-bright); font-weight:600; margin-bottom:8px;">
+                  👅 喝完觉得味道如何？（点击反馈主观品鉴，AI 将自动校准下次磨豆刻度并锁定黄金配方）：
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <button class="btn" onclick="submitTasteFeedback('${rec.id}', 5, 'balanced_sweet')">🏆 酸甜平衡·锁定黄金配方 (5★)</button>
+                  <button class="btn" onclick="submitTasteFeedback('${rec.id}', 4, 'too_sour')">🍋 偏酸/尖酸 (下次调细刻度)</button>
+                  <button class="btn" onclick="submitTasteFeedback('${rec.id}', 3, 'too_bitter')">🍫 偏苦/尾段涩 (下次调粗/提前截流)</button>
+                  <button class="btn" onclick="submitTasteFeedback('${rec.id}', 4, 'watery')">💧 偏淡/醇厚不足 (下次加粉收紧比例)</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1345,6 +1427,103 @@
           </div>
         </div>
       `;
+    }
+
+    function renderBeansTab() {
+      const lib = appState.bean_library || {};
+      const beans = lib.beans || [];
+      const eq = lib.equipment || {};
+
+      const listEl = document.getElementById('beanLibraryList');
+      if (listEl) {
+        listEl.innerHTML = beans.map(b => `
+          <div class="record-item">
+            <div class="record-item-top">
+              <span style="font-size:12px; color:var(--crema-bright); font-weight:700;">🎙️ 语音简称: ${(b.short_aliases || []).join(' / ')}</span>
+              <span class="badge badge-ok">${b.roast_level || '中浅烘'} · 余量 ${b.remaining_weight_g || 200}g</span>
+            </div>
+            <div class="record-bean">${b.full_name}</div>
+            <div class="record-meta" style="margin-top:4px;">
+              <span>推荐刻度: <strong>${b.recommended_grind || '--'}</strong></span>
+              <span>✨ ${(b.flavor_tags || []).join(' · ')}</span>
+            </div>
+            <div style="font-size:11.5px; color:var(--crema); margin-top:4px;">🏆 黄金配方: ${b.golden_recipe_note || '--'}</div>
+          </div>
+        `).join('');
+      }
+
+      if (document.getElementById('eqGrinderType')) {
+        document.getElementById('eqGrinderType').value = eq.default_grinder_type || '额外独立磨豆机';
+        document.getElementById('eqGrinderModel').value = eq.default_grinder_model || 'Niche Zero (63mm 锥刀)';
+        document.getElementById('eqSecGrinderModel').value = eq.secondary_grinder_model || 'Breville 铂富内置锥刀磨豆机';
+        document.getElementById('eqWaterTemp').value = eq.default_water_temp_c || 93.0;
+      }
+
+      const usb = appState.usb_status || {};
+      const usbEl = document.getElementById('usbProbeStatusText');
+      if (usbEl) {
+        const serials = (usb.serial_ports || []).join(', ') || '未检测到 DJI 串口';
+        usbEl.innerHTML = `当前已连接 DJI 串口/音频节点: <code>${serials}</code> | 相机 USB-C 直连状态: <strong>${usb.camera_usb_connected ? '🟢 已连接真机' : '⚪ 等待插入 Pocket 3 / Pocket 4 Pro USB-C 数据线'}</strong>`;
+      }
+    }
+
+    async function submitTasteFeedback(recordId, rating, tasteTag) {
+      const res = await fetch('/api/records/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ record_id: recordId, rating, taste_tag: tasteTag })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        await fetchState();
+        showToast('👅 已记录您的主观品鉴反馈，AI 已更新下次研磨与萃取建议！');
+      }
+    }
+
+    async function saveNewBean() {
+      const fullName = document.getElementById('newBeanFullName').value.trim();
+      const aliases = document.getElementById('newBeanAliases').value.trim();
+      if (!fullName || !aliases) {
+        showToast('请填写咖啡豆唤醒简称和完整名称');
+        return;
+      }
+      await fetch('/api/beans/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          short_aliases: aliases,
+          full_name: fullName,
+          roast_level: document.getElementById('newBeanRoast').value.trim(),
+          recommended_grind: document.getElementById('newBeanGrind').value.trim(),
+          flavor_tags: document.getElementById('newBeanFlavors').value.trim(),
+          golden_recipe_note: document.getElementById('newBeanNote').value.trim()
+        })
+      });
+      await fetchState();
+      showToast('🫘 新咖啡豆已加入常驻豆仓！之后做咖啡只需说简称即可自动匹配。');
+    }
+
+    async function saveEquipmentProfile() {
+      await fetch('/api/equipment/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          default_grinder_type: document.getElementById('eqGrinderType').value.trim(),
+          default_grinder_model: document.getElementById('eqGrinderModel').value.trim(),
+          secondary_grinder_model: document.getElementById('eqSecGrinderModel').value.trim(),
+          default_water_temp_c: parseFloat(document.getElementById('eqWaterTemp').value) || 93.0
+        })
+      });
+      await fetchState();
+      showToast('⚙️ 常驻磨豆机与设备预设已保存！');
+    }
+
+    async function probeUsbDevices() {
+      const res = await fetch('/api/camera/usb_probe');
+      const data = await res.json();
+      appState.usb_status = data;
+      renderBeansTab();
+      showToast(`🔍 USB 扫描完成：串口 [${(data.serial_ports || []).join(', ') || '无'}]`);
     }
 
     function renderCameraTab() {
