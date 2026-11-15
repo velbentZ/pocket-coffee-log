@@ -26,7 +26,9 @@ if PROJECT_ROOT not in sys.path:
 
 from core.analyzer import enrich_barista_analysis, extract_parameters_from_transcript
 from core.camera_sta_bridge import CameraInternalBridge
+from core.context_engine import ProjectMemoryManager, SessionContextCompactor
 from core.notifier import NotificationManager
+from core.registry import global_event_bus, global_registry
 from core.store import CoffeeStore
 from daemon.voice_session import VoiceWakeupSessionManager
 
@@ -38,6 +40,14 @@ store = CoffeeStore(DATA_DIR)
 camera_bridge = CameraInternalBridge(DATA_DIR)
 notifier = NotificationManager(DATA_DIR)
 voice_manager = VoiceWakeupSessionManager(store, camera_bridge, notifier)
+memory_manager = ProjectMemoryManager(PROJECT_ROOT)
+compactor = SessionContextCompactor()
+
+# Register core modules in global ModuleRegistry
+global_registry.register("camera_driver", "dji_duml_sta", camera_bridge, {"models": ["Pocket 3", "Pocket 4 Pro"]})
+global_registry.register("extractor", "multimodal_cn_regex", extract_parameters_from_transcript, {"lossless": True})
+global_registry.register("advisor", "barista_flavor_advisor", enrich_barista_analysis, {"radar_axes": 6})
+global_registry.register("notifier", "multi_channel_dispatcher", notifier, {"channels": ["WeCom", "ServerChan", "Bark", "Feishu"]})
 
 # Ensure initial notifications are seeded for the sample records if history is empty
 if not notifier.get_history():
@@ -94,7 +104,14 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 "on_camera_script": agent_script,
                 "notifications": notifier.get_history(),
                 "notification_config": notifier.load_config(),
+                "module_registry": global_registry.summary(),
+                "context_snapshot": memory_manager.build_current_snapshot(),
             })
+            return
+
+        if path == "/api/context/snapshot":
+            snap = memory_manager.refresh_snapshot()
+            self._send_json({"ok": True, "snapshot": snap, "registry": global_registry.summary()})
             return
 
         if path == "/api/camera/script":

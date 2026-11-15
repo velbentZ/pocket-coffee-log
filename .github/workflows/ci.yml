@@ -1,0 +1,27 @@
+name: Automated Tests & Context Invariant Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-verify-context:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9+
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Automated Unit & Integration Tests
+        run: |
+          python3 -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Verify Lossless Context Snapshot Integrity
+        run: |
+          python3 -c "from core.context_engine import ProjectMemoryManager; import os; snap = ProjectMemoryManager(os.getcwd()).refresh_snapshot(); assert snap['schema_version'] == '2.0.0'; assert len(snap['hard_invariants']) >= 6; print('✅ All context invariants verified!')"

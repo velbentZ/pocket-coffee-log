@@ -1,0 +1,51 @@
+{
+  "schema_version": "2.0.0",
+  "updated_at": "2026-11-15 10:58:16",
+  "project_name": "pocket-coffee-log",
+  "github_repo": "https://github.com/velbentZ/pocket-coffee-log",
+  "local_paths": {
+    "documents_repo": "/Users/zhengjiaxin/Documents/pocket-coffee-log",
+    "server_default_port": 8788
+  },
+  "hard_invariants": [
+    "8 Required Brew Fields: bean_name, bean_weight_g, grind_setting, grinder_type (independent vs built-in), grinder_model, brew_method (Espresso vs Cold Brew), yield_g, extraction_time_s, pressure_bar.",
+    "Camera Persistent STA Mode: DJI DUML v1 [CmdSet=0x07, CmdId=0x47] switches Pocket 3 / Pocket 4 Pro from AP (192.168.2.1) to persistent Home LAN STA mode.",
+    "On-Camera Internal Daemon: /data/local/tmp/pocket_sta_agent.sh keeps wpa_supplicant alive, disables wlan0 power_save, exposes DCIM on :8088, and webhooks /api/camera/webhook on MP4 completion.",
+    "Zero-Intervention Voice Pipeline: Wake phrase '我要开始制作咖啡' triggers DUML [02:02] start; stop phrase '制作完成' or silence stops recording, runs AI analysis, and pushes mobile alert.",
+    "Missing Parameter Loop: Any missing required field marks status='needs_info' and sends interactive supplement link to WeCom/ServerChan/Bark/Mobile UI.",
+    "Lossless Context Compaction: SessionContextCompactor preserves provenance + revision history for self-corrections while compressing raw transcripts."
+  ],
+  "modules": {
+    "core/models.py": "Data contracts (CoffeeRecord, FlavorProfile, REQUIRED_BREW_FIELDS)",
+    "core/registry.py": "Decoupled EventBus & ModuleRegistry for pluggable drivers/extractors/advisors/notifiers",
+    "core/context_engine.py": "Lossless SessionContextCompactor & ProjectMemoryManager",
+    "core/camera_sta_bridge.py": "DJI DUML v1 packet builder, STA provisioner, ADB TCP (:5555) root shell bridge",
+    "core/analyzer.py": "Multimodal voice/video parameter extractor, barista advisor, Xiaohongshu/WeChat copy generator",
+    "core/notifier.py": "WeCom, ServerChan, Bark, Feishu, and macOS notification dispatcher",
+    "core/store.py": "JSON repository persistence & sample records",
+    "daemon/voice_session.py": "Wake-word & auto-stop state machine wired to SessionContextCompactor",
+    "server/app.py": "REST API & static web server (default port 8788)"
+  },
+  "iteration_backlog": [
+    {
+      "id": "ITER-01",
+      "status": "done",
+      "title": "Core modular scaffold + DUML STA bridge + Voice session pipeline"
+    },
+    {
+      "id": "ITER-02",
+      "status": "done",
+      "title": "Lossless SessionContextCompactor & ProjectMemoryManager"
+    },
+    {
+      "id": "ITER-03",
+      "status": "ready",
+      "title": "Real-time RTSP frame OCR for digital coffee scale & pressure gauge"
+    },
+    {
+      "id": "ITER-04",
+      "status": "ready",
+      "title": "BLE GATT (0xFFF5) auto-wakeup from deep sleep on macOS CoreBluetooth"
+    }
+  ]
+}
