@@ -442,14 +442,15 @@ class CameraInternalBridge:
         # Try sending UDP DUML packet to camera if reachable on 192.168.2.1 (AP) or target LAN IP
         udp_sent_to = None
         for candidate_ip in ["192.168.2.1", lan_ip]:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(0.2)
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.settimeout(0.2)
                 sock.sendto(duml_pkt, (candidate_ip, 9004))
                 udp_sent_to = candidate_ip
-                sock.close()
             except OSError:
                 pass
+            finally:
+                sock.close()
 
         cam = state["cameras"].get(device_id, {})
         if cam:
@@ -548,13 +549,14 @@ class CameraInternalBridge:
         pkt = build_camera_shutter_packet(start=is_start)
         ip = cam["lan_ip"]
 
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.15)
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(0.15)
             sock.sendto(pkt, (ip, cam.get("duml_udp_port", 9004)))
-            sock.close()
         except OSError:
             pass
+        finally:
+            sock.close()
 
         cam["recording_state"] = "recording" if is_start else "idle"
         cam["last_heartbeat"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
