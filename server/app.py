@@ -236,12 +236,12 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
         self._send_json({"ok": False, "error": f"Unknown endpoint {path}"}, status=404)
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8765) -> None:
+def run_server(host: str = "0.0.0.0", port: int = 8788) -> None:
     server = HTTPServer((host, port), CoffeeRequestHandler)
     print(f"☕️ Pocket Coffee Log Server listening on http://{host}:{port}")
     server.serve_forever()
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8765"))
+    port = int(os.environ.get("PORT", "8788"))
     run_server(port=port)
