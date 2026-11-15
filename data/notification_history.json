@@ -1,0 +1,53 @@
+[
+  {
+    "id": "notif-103142",
+    "time": "2026-11-15 10:31:42",
+    "record_id": "brew-20261115-094210-p4p",
+    "level": "success",
+    "title": "☕️ 咖啡制作报告已生成｜埃塞俄比亚花魁7.0日晒中浅烘",
+    "summary": "【SOE 单一产地意式浓缩】18.5g 粉 → 37.0g 液 (1:2.0)\n磨豆：额外独立磨豆机 Niche Zero (刻度 14.5 格)\n萃取：29.0s @ 9.2 bar\n👉 点击查看精美海报并一键分享小红书/微信：http://192.168.5.84:8765/?record_id=brew-20261115-094210-p4p",
+    "report_url": "http://192.168.5.84:8765/?record_id=brew-20261115-094210-p4p",
+    "missing_fields": [],
+    "channels": [
+      "Web 手机端实时提醒中心",
+      "macOS / iCloud 通知横幅"
+    ]
+  },
+  {
+    "id": "notif-103142",
+    "time": "2026-11-15 10:31:42",
+    "record_id": "brew-20261115-095012-p3",
+    "level": "warning",
+    "title": "⚠️ 咖啡记录待补全 (2项缺失)",
+    "summary": "相机 (DJI Osmo Pocket 3) 已完成视频与语音分析，但未识别到：研磨度刻度、萃取压力 (bar)。\n已识别豆子：哥伦比亚天堂庄园双重厌氧中浅烘 (18.0g)。\n👉 点击通知直接在手机端语音或点选补全：http://192.168.5.84:8765/?record_id=brew-20261115-095012-p3&action=supplement",
+    "report_url": "http://192.168.5.84:8765/?record_id=brew-20261115-095012-p3",
+    "missing_fields": [
+      {
+        "field": "grind_setting",
+        "label": "研磨度刻度"
+      },
+      {
+        "field": "pressure_bar",
+        "label": "萃取压力 (bar)"
+      }
+    ],
+    "channels": [
+      "Web 手机端实时提醒中心",
+      "macOS / iCloud 通知横幅"
+    ]
+  },
+  {
+    "id": "notif-103142",
+    "time": "2026-11-15 10:31:42",
+    "record_id": "brew-20261114-211500-cb",
+    "level": "success",
+    "title": "☕️ 咖啡制作报告已生成｜巴拿马翡翠庄园绿标瑰夏浅烘",
+    "summary": "【冷萃咖啡 (Cold Brew)】45.0g 粉 → 405.0g 液 (1:9.0)\n磨豆：额外独立磨豆机 DF64 (刻度 58 格)\n萃取：43200.0s @ 1.0 bar\n👉 点击查看精美海报并一键分享小红书/微信：http://192.168.5.84:8765/?record_id=brew-20261114-211500-cb",
+    "report_url": "http://192.168.5.84:8765/?record_id=brew-20261114-211500-cb",
+    "missing_fields": [],
+    "channels": [
+      "Web 手机端实时提醒中心",
+      "macOS / iCloud 通知横幅"
+    ]
+  }
+]

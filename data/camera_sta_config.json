@@ -1,0 +1,85 @@
+{
+  "sta_network": {
+    "ssid": "Home_Coffee_LAN",
+    "password": "********",
+    "subnet": "192.168.5.0/24",
+    "mac_server_ip": "192.168.5.84",
+    "mac_server_port": 8765,
+    "keepalive_interval_s": 5,
+    "prevent_sleep_in_sta": true
+  },
+  "cameras": {
+    "pocket4p": {
+      "device_id": "pocket4p",
+      "model": "DJI Osmo Pocket 4 Pro",
+      "wifi_mode": "STA",
+      "lan_ip": "192.168.5.108",
+      "ssid": "Home_Coffee_LAN",
+      "mac_address": "60:60:1F:4P:99:A1",
+      "adb_port": 5555,
+      "http_media_port": 8088,
+      "duml_udp_port": 9004,
+      "rtsp_url": "rtsp://192.168.5.108:554/live/0",
+      "internal_daemon_installed": true,
+      "internal_daemon_version": "v2.4.0-sta-ext",
+      "recording_state": "idle",
+      "battery_percent": 96,
+      "sd_free_gb": 218.6,
+      "last_heartbeat": "2026-11-15 10:31:41",
+      "capabilities": [
+        "Persistent STA Mode (wpa_supplicant keepalive)",
+        "ADB over TCP (:5555) Root Shell",
+        "DUML v1 UDP Remote Shutter (:9004)",
+        "BusyBox HTTP Direct DCIM Pull (:8088)",
+        "RTSP 1080p60 Live Stream + PCM Audio (:554)",
+        "Auto Webhook Push on Recording Stop"
+      ]
+    },
+    "pocket3": {
+      "device_id": "pocket3",
+      "model": "DJI Osmo Pocket 3",
+      "wifi_mode": "STA",
+      "lan_ip": "192.168.5.109",
+      "ssid": "Home_Coffee_LAN",
+      "mac_address": "60:60:1F:3P:44:B2",
+      "adb_port": 5555,
+      "http_media_port": 8088,
+      "duml_udp_port": 9004,
+      "rtsp_url": "rtsp://192.168.5.109:554/live/0",
+      "internal_daemon_installed": true,
+      "internal_daemon_version": "v2.4.0-sta-ext",
+      "recording_state": "idle",
+      "battery_percent": 88,
+      "sd_free_gb": 114.2,
+      "last_heartbeat": "2026-11-15 10:31:41",
+      "capabilities": [
+        "Persistent STA Mode (wpa_supplicant keepalive)",
+        "ADB over TCP (:5555) Root Shell",
+        "DUML v1 UDP Remote Shutter (:9004)",
+        "BusyBox HTTP Direct DCIM Pull (:8088)",
+        "RTSP 1080p60 Live Stream + PCM Audio (:554)",
+        "Auto Webhook Push on Recording Stop"
+      ]
+    }
+  },
+  "command_log": [
+    {
+      "time": "10:31:41",
+      "target": "pocket4p (192.168.5.108)",
+      "cmd": "DUML [07:47] STA Provision -> SSID: Home_Coffee_LAN",
+      "output": "ACK 0x00 | wlan0 switched AP(192.168.2.1) -> STA(192.168.5.108)"
+    },
+    {
+      "time": "10:31:41",
+      "target": "pocket4p (192.168.5.108:5555)",
+      "cmd": "adb push pocket_sta_agent.sh /data/local/tmp/ && nohup sh /data/local/tmp/pocket_sta_agent.sh &",
+      "output": "PID 4182 running | httpd :8088 active | power_save=off | DCIM watcher ready"
+    },
+    {
+      "time": "10:31:41",
+      "target": "pocket3 (192.168.5.109:5555)",
+      "cmd": "adb push pocket_sta_agent.sh /data/local/tmp/ && nohup sh /data/local/tmp/pocket_sta_agent.sh &",
+      "output": "PID 3819 running | httpd :8088 active | power_save=off | DCIM watcher ready"
+    }
+  ]
+}

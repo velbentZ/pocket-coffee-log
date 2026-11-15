@@ -1,0 +1,8 @@
+{
+  "mobile_base_url": "http://192.168.5.84:8765",
+  "enable_macos_banner": true,
+  "wecom_webhook_url": "",
+  "serverchan_sendkey": "",
+  "bark_url": "",
+  "feishu_webhook_url": ""
+}
