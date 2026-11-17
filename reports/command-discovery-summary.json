@@ -1,0 +1,1163 @@
+{
+  "empty_sweep_count": 1792,
+  "length_probes": 160,
+  "length_probe_outcomes": {
+    "timeout": 160
+  },
+  "non_unsupported": [
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 7,
+      "length": 0,
+      "seq": 18008,
+      "responses": [
+        {
+          "payload": "00114f736d6f506f636b657434502d34464235",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 8,
+      "length": 0,
+      "seq": 18009,
+      "responses": [
+        {
+          "payload": "ff",
+          "first_byte": 255
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 10,
+      "length": 0,
+      "seq": 18011,
+      "responses": [
+        {
+          "payload": "00020000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 11,
+      "length": 0,
+      "seq": 18012,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 12,
+      "length": 0,
+      "seq": 18013,
+      "responses": [
+        {
+          "payload": "009c5a8a974fb5",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 13,
+      "length": 0,
+      "seq": 18014,
+      "responses": [
+        {
+          "payload": "ff",
+          "first_byte": 255
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 14,
+      "length": 0,
+      "seq": 18015,
+      "responses": [
+        {
+          "payload": "[credential redacted]",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 15,
+      "length": 0,
+      "seq": 18016,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 57,
+      "length": 0,
+      "seq": 18058,
+      "responses": [
+        {
+          "payload": "0000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 58,
+      "length": 0,
+      "seq": 18059,
+      "responses": [
+        {
+          "payload": "1500",
+          "first_byte": 21
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 65,
+      "length": 0,
+      "seq": 18066,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 67,
+      "length": 0,
+      "seq": 18068,
+      "responses": [
+        {
+          "payload": "ff",
+          "first_byte": 255
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 68,
+      "length": 0,
+      "seq": 18069,
+      "responses": [
+        {
+          "payload": "000001",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 69,
+      "length": 0,
+      "seq": 18070,
+      "responses": [
+        {
+          "payload": "0001",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 70,
+      "length": 0,
+      "seq": 18071,
+      "responses": [
+        {
+          "payload": "e4",
+          "first_byte": 228
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 72,
+      "length": 0,
+      "seq": 18073,
+      "responses": [
+        {
+          "payload": "000000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 74,
+      "length": 0,
+      "seq": 18075,
+      "responses": [
+        {
+          "payload": "0000054661696c00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 75,
+      "length": 0,
+      "seq": 18076,
+      "responses": [
+        {
+          "payload": "00ff00054661696c00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 76,
+      "length": 0,
+      "seq": 18077,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 77,
+      "length": 0,
+      "seq": 18078,
+      "responses": [
+        {
+          "payload": "0000000000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 81,
+      "length": 0,
+      "seq": 18082,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 82,
+      "length": 0,
+      "seq": 18083,
+      "responses": [
+        {
+          "payload": "000001",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 87,
+      "length": 0,
+      "seq": 18088,
+      "responses": [
+        {
+          "payload": "0000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 101,
+      "length": 0,
+      "seq": 18102,
+      "responses": [
+        {
+          "payload": "000800",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 104,
+      "length": 0,
+      "seq": 18105,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 146,
+      "length": 0,
+      "seq": 18147,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 147,
+      "length": 0,
+      "seq": 18148,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 148,
+      "length": 0,
+      "seq": 18149,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 149,
+      "length": 0,
+      "seq": 18150,
+      "responses": [
+        {
+          "payload": "00011b436f",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 150,
+      "length": 0,
+      "seq": 18151,
+      "responses": [
+        {
+          "payload": "01",
+          "first_byte": 1
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 171,
+      "length": 0,
+      "seq": 18172,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 174,
+      "length": 0,
+      "seq": 18175,
+      "responses": [
+        {
+          "payload": "000000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 175,
+      "length": 0,
+      "seq": 18176,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 176,
+      "length": 0,
+      "seq": 18177,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 178,
+      "length": 0,
+      "seq": 18179,
+      "responses": [
+        {
+          "payload": "e3",
+          "first_byte": 227
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 180,
+      "length": 0,
+      "seq": 18181,
+      "responses": [
+        {
+          "payload": "ff",
+          "first_byte": 255
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 182,
+      "length": 0,
+      "seq": 18183,
+      "responses": [
+        {
+          "payload": "e3",
+          "first_byte": 227
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 183,
+      "length": 0,
+      "seq": 18184,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 186,
+      "length": 0,
+      "seq": 18187,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 188,
+      "length": 0,
+      "seq": 18189,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 189,
+      "length": 0,
+      "seq": 18190,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 190,
+      "length": 0,
+      "seq": 18191,
+      "responses": [
+        {
+          "payload": "0000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 192,
+      "length": 0,
+      "seq": 18193,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 0,
+      "length": 0,
+      "seq": 18769,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 1,
+      "length": 0,
+      "seq": 18770,
+      "responses": [
+        {
+          "payload": "00100000000000000000000000000000000000000001000000000100000000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 42,
+      "length": 0,
+      "seq": 18811,
+      "responses": [
+        {
+          "payload": "dd",
+          "first_byte": 221
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 121,
+      "length": 0,
+      "seq": 18890,
+      "responses": [
+        {
+          "payload": "d6",
+          "first_byte": 214
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 135,
+      "length": 0,
+      "seq": 18904,
+      "responses": [
+        {
+          "payload": "06000400",
+          "first_byte": 6
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 136,
+      "length": 0,
+      "seq": 18905,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 142,
+      "length": 0,
+      "seq": 18911,
+      "responses": [
+        {
+          "payload": "e3",
+          "first_byte": 227
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 190,
+      "length": 0,
+      "seq": 18959,
+      "responses": [
+        {
+          "payload": "d6",
+          "first_byte": 214
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 191,
+      "length": 0,
+      "seq": 18960,
+      "responses": [
+        {
+          "payload": "d6",
+          "first_byte": 214
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 233,
+      "length": 0,
+      "seq": 19002,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        0
+      ],
+      "cmd_set": 0,
+      "cmd_id": 250,
+      "length": 0,
+      "seq": 19019,
+      "responses": [
+        {
+          "payload": "e6",
+          "first_byte": 230
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 0,
+      "length": 0,
+      "seq": 19025,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 1,
+      "length": 0,
+      "seq": 19026,
+      "responses": [
+        {
+          "payload": "00124847323234204143205665722e3133000801020a0801020a010000c000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 7,
+      "length": 0,
+      "seq": 19032,
+      "responses": [
+        {
+          "payload": "01",
+          "first_byte": 1
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 8,
+      "length": 0,
+      "seq": 19033,
+      "responses": [
+        {
+          "payload": "",
+          "first_byte": null
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 9,
+      "length": 0,
+      "seq": 19034,
+      "responses": [
+        {
+          "payload": "ed",
+          "first_byte": 237
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 10,
+      "length": 0,
+      "seq": 19035,
+      "responses": [
+        {
+          "payload": "01",
+          "first_byte": 1
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 11,
+      "length": 0,
+      "seq": 19036,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 12,
+      "length": 0,
+      "seq": 19037,
+      "responses": [
+        {
+          "payload": "e3",
+          "first_byte": 227
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 42,
+      "length": 0,
+      "seq": 19067,
+      "responses": [
+        {
+          "payload": "f5",
+          "first_byte": 245
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 65,
+      "length": 0,
+      "seq": 19090,
+      "responses": [
+        {
+          "payload": "00",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 79,
+      "length": 0,
+      "seq": 19104,
+      "responses": [
+        {
+          "payload": "",
+          "first_byte": null
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 121,
+      "length": 0,
+      "seq": 19146,
+      "responses": [
+        {
+          "payload": "d6",
+          "first_byte": 214
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 129,
+      "length": 0,
+      "seq": 19154,
+      "responses": [
+        {
+          "payload": "e3",
+          "first_byte": 227
+        }
+      ]
+    }
+  ],
+  "postflight": [
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 7,
+      "length": 0,
+      "seq": 18001,
+      "responses": [
+        {
+          "payload": "00114f736d6f506f636b657434502d34464235",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 70,
+      "length": 0,
+      "seq": 18002,
+      "responses": [
+        {
+          "payload": "e4",
+          "first_byte": 228
+        }
+      ]
+    },
+    {
+      "target": [
+        8,
+        2
+      ],
+      "cmd_set": 0,
+      "cmd_id": 1,
+      "length": 0,
+      "seq": 18003,
+      "responses": [
+        {
+          "payload": "00124847323234204143205665722e3133000801020a0801020a010000c000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 174,
+      "length": 0,
+      "seq": 18004,
+      "responses": [
+        {
+          "payload": "000000",
+          "first_byte": 0
+        }
+      ]
+    },
+    {
+      "target": [
+        7,
+        0
+      ],
+      "cmd_set": 7,
+      "cmd_id": 68,
+      "length": 0,
+      "seq": 18005,
+      "responses": [
+        {
+          "payload": "000001",
+          "first_byte": 0
+        }
+      ]
+    }
+  ]
+}

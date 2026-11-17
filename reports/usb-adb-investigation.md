@@ -136,3 +136,33 @@ no pre-cancellation RNDIS baseline proving that dismissal enabled it.
 Follow-up remains necessary for FTP access, UDP services, and documented mode
 commands. `make test`: 13 tests passed. Probe script archived alongside JSON;
 its short response windows and limited command/port list are not exhaustive.
+
+## Authorized command discovery — 2026-11-17
+
+Executed 1,792 empty-payload requests: all 256 command IDs in Wi-Fi set 07
+at (7,0), (8,0), (8,2), and sets 00/08 at (8,0), (8,2).
+`command-discovery.jsonl` records correlated CRC-valid response payloads,
+sequence, target and request length; AP credential response 07:0e is redacted.
+`command-discovery-summary.json` lists every non-e0 response. Empty response
+payloads are recorded separately from timeouts; a non-e0 response alone does
+not establish success or command meaning. Response window is 250 ms.
+
+Only 07:46 on (7,0) returned e4 on empty payload. All zero-filled lengths
+1–160 timed out; none produced an accepted-length response. Postflight empty
+07:46 still returned e4, version and SSID queries succeeded. Thus the transport
+remained available, but no STA request structure was discovered. The claim
+that e4 necessarily proves a simple fixed-size structure remains unverified
+for this particular handler. No credential-bearing STA request was sent.
+07:ae returned 000000 and 07:44 returned 000001 after probing; neither is
+an identified STA IPv4 address. ARP snapshot is archived; without a known
+STA MAC/IP, it cannot prove association. No USB/ADB setter was identified.
+The requested STA connection remains incomplete; no persistent provisioning
+implementation is warranted by these observations.
+
+The scripts are explicitly invasive live experiments, not passive discovery:
+unknown empty commands or zero buffers can alter settings. Do not rerun them
+without authorization. They leave storage interfaces unclaimed.
+
+Validation: `make test` passed all 13 tests. No production code changed.
+
+RNDIS SYN scan: 2096 ports probed, SYN+ACK ports [], RST ports 0, no observed response 2096. Raw RNDIS frames and decoded summary are archived in port-discovery*.json. Responses are attributed by source port, not capture window. The 40 ms per-port window and single attempt can miss responses; this is not an exhaustive 65,535-port scan.
