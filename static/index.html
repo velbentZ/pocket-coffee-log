@@ -836,6 +836,218 @@
       margin-top: 4px;
     }
 
+    /* Visualizer Shot Comparison & Responsive Table */
+    .visualizer-box {
+      background: rgba(18, 14, 12, 0.65);
+      border: 1px solid rgba(212, 163, 115, 0.28);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 22px;
+    }
+
+    .visualizer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .visualizer-header h4 {
+      font-size: 15px;
+      color: var(--crema-bright);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .visualizer-controls {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .shot-select {
+      background: #140f0d;
+      border: 1px solid var(--border-subtle);
+      color: var(--latte);
+      padding: 7px 10px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      max-width: 240px;
+    }
+
+    .visualizer-layout {
+      display: grid;
+      grid-template-columns: 270px 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    @media (max-width: 900px) {
+      .visualizer-layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .table-wrapper {
+      overflow: auto;
+      max-inline-size: 100%;
+      max-block-size: min(460px, 80vh);
+      container-type: inline-size;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      background: #140f0d;
+    }
+
+    .compare-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 12.5px;
+      --label-2: "历史基准 (Shot A)";
+      --label-3: "当前对比 (Shot B)";
+      --label-4: "调整差值 (Delta)";
+    }
+
+    .compare-table caption {
+      text-align: left;
+      padding: 10px 14px;
+      font-size: 12px;
+      color: var(--text-muted);
+      background: #17120f;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .compare-table thead {
+      position: sticky;
+      inset-block-start: 0;
+      z-index: 1;
+      background: #211814;
+    }
+
+    .compare-table th,
+    .compare-table td {
+      padding: 9px 12px;
+      border-bottom: 1px solid rgba(212, 163, 115, 0.12);
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .compare-table thead th {
+      color: var(--crema-bright);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .compare-table tbody th {
+      position: sticky;
+      inset-inline-start: 0;
+      background: #17120f;
+      color: var(--latte);
+      font-weight: 600;
+    }
+
+    @container (width < 600px) {
+      .compare-table,
+      .compare-table thead,
+      .compare-table tbody,
+      .compare-table tr,
+      .compare-table th,
+      .compare-table td {
+        display: block;
+      }
+
+      .compare-table thead {
+        display: none;
+      }
+
+      .compare-table tr {
+        margin-block-end: 0.85rem;
+        border: 1px solid var(--border-subtle);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .compare-table tbody th {
+        position: sticky;
+        inset-block-start: 0;
+        z-index: 2;
+        background: #241b17;
+      }
+
+      .compare-table td:nth-child(2)::before {
+        content: var(--label-2) ": ";
+        color: var(--text-muted);
+        font-weight: 600;
+      }
+
+      .compare-table td:nth-child(3)::before {
+        content: var(--label-3) ": ";
+        color: var(--text-muted);
+        font-weight: 600;
+      }
+
+      .compare-table td:nth-child(4)::before {
+        content: var(--label-4) ": ";
+        color: var(--text-muted);
+        font-weight: 600;
+      }
+    }
+
+    .delta-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 700;
+    }
+
+    .delta-pos {
+      background: rgba(82, 183, 136, 0.18);
+      color: #74c69d;
+      border: 1px solid rgba(82, 183, 136, 0.35);
+    }
+
+    .delta-neg {
+      background: rgba(244, 162, 97, 0.18);
+      color: var(--accent-amber);
+      border: 1px solid rgba(244, 162, 97, 0.38);
+    }
+
+    .delta-neutral {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+    }
+
+    .persistence-box {
+      background: rgba(244, 162, 97, 0.09);
+      border: 1px solid rgba(244, 162, 97, 0.32);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      font-size: 12px;
+      color: #e9d8ce;
+    }
+
+    .media-preview-drawer {
+      margin-top: 14px;
+      background: #120e0c;
+      border: 1px solid rgba(82, 183, 136, 0.38);
+      border-radius: 12px;
+      padding: 14px;
+    }
+
+    .media-preview-drawer video {
+      width: 100%;
+      max-height: 280px;
+      border-radius: 8px;
+      background: #000;
+      margin-top: 8px;
+    }
+
     .toast {
       position: fixed;
       bottom: 24px;
@@ -981,12 +1193,12 @@
     <!-- TAB 2: CAMERA INTERNAL STA & SHELL EXTENSION -->
     <div id="tab-camera" class="tab-panel">
       <div class="missing-banner" style="margin-bottom:20px; border-color:var(--crema);">
-        <h3>🔌 USB-C 真机探测与一键 STA 持久驻留注入状态</h3>
+        <h3>🔌 USB-C / Root ADB 真机探测与 STA 实测硬件中枢</h3>
         <p id="usbProbeStatusText">正在检测当前 Mac USB 总线与串口设备...</p>
         <div style="display:flex; gap:10px; flex-wrap:wrap;">
           <button class="btn btn-primary" onclick="probeUsbDevices()">🔍 立即扫描 Mac USB-C / 串口设备</button>
           <span style="font-size:12.5px; color:var(--crema-bright); align-self:center;">
-            💡 提示：已检测到您的无线麦接收器 <code>/dev/cu.DJI-MIC2-5CC94A</code> 在线！将 Pocket 3 或 Pocket 4 Pro 用 USB-C 插上 Mac 并提供路由器 Wi-Fi 账号密码即可直接注入。
+            💡 实测架构：<code>OsmoPocket4P-ANHXP5J0022DTW</code> (<code>eagle4_hg224</code>) 通过 PCIe Wi-Fi <code>load</code> + <code>wpa_supplicant</code> + <code>busybox udhcpc</code> 接入局域网 <code>192.168.5.93</code>，开启 <code>:8088</code> 媒体服务与 <code>/api/camera/heartbeat</code> 实时心跳。
           </span>
         </div>
       </div>
@@ -996,11 +1208,11 @@
       <div class="sta-grid">
         <div class="camera-card">
           <div class="camera-card-head">
-            <h3>🔧 持久 STA 网络配置 &amp; 内部守护脚本注入</h3>
-            <span class="badge badge-ok">DUML [07:47] + ADB TCP :5555</span>
+            <h3>🔧 STA 网络配置 &amp; 内部守护脚本控制</h3>
+            <span class="badge badge-ok">Root ADB + BusyBox :8088</span>
           </div>
           <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px;">
-            将 Pocket 3 / Pocket 4 Pro 从默认的临时 AP 热点模式切换为持久连接家里路由器的 <strong>STA 客户端模式</strong>，并在相机内部 Linux/Android 环境驻留 <code>/data/local/tmp/pocket_sta_agent.sh</code>，阻止休眠断连、开启 <code>:8088</code> 媒体直拉服务，并在每次录制结束时自动 Webhook 通知本机后台。
+            将 Pocket 4 Pro / Pocket 3 切换为连接家庭路由器的 <strong>STA 客户端模式</strong>，并在相机可写分区部署 <code>/data/pocket-coffee/pocket_sta_agent.sh</code>，开启 <code>:8088</code> 媒体直拉服务（暴露 <code>/mnt/media_rw/emulated/DCIM</code>）并向 <code>:8788</code> 发送实时心跳与录制 Webhook。
           </p>
           <div class="supplement-grid">
             <div class="supp-field">
@@ -1016,20 +1228,20 @@
               <input id="staPassword" type="password" value="nidemingzi" />
             </div>
             <div class="supp-field">
-              <label>相机固定局域网 IP (STA)</label>
-              <input id="staLanIp" value="192.168.5.108" />
+              <label>相机局域网 STA IP</label>
+              <input id="staLanIp" value="192.168.5.93" />
             </div>
           </div>
           <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
-            <button class="btn btn-primary" onclick="provisionCameraSta()">🚀 下发 DUML [07:47] STA 配网 &amp; 注入内部守护进程</button>
-            <button class="btn" onclick="execCameraCmd('iw dev wlan0 info && ps')">🔍 查看相机内部 wlan0 与进程状态</button>
-            <button class="btn" onclick="execCameraCmd('ls -la /storage/sdcard0/DCIM/DJI_001')">📂 列出相机内部 DCIM 视频文件</button>
+            <button class="btn btn-primary" onclick="provisionCameraSta()">🚀 下发 DUML [07:47] STA 配网请求</button>
+            <button class="btn" onclick="execCameraCmd('wpa_cli -p /data/misc/wifi/sockets -i wlan0 status && ip -4 addr show wlan0')">🔍 查看相机内部 wlan0 与 WPA 状态</button>
+            <button class="btn" onclick="execCameraCmd('ls -la /mnt/media_rw/emulated/DCIM/DJI_001')">📂 列出相机内部实测 DCIM 视频文件</button>
           </div>
 
           <div style="margin-top:16px;">
-            <label style="font-size:12px; color:var(--crema-bright); display:block; margin-bottom:6px;">💻 进入相机内部 Root Shell 执行自定义命令 (ADB TCP :5555)</label>
+            <label style="font-size:12px; color:var(--crema-bright); display:block; margin-bottom:6px;">💻 进入相机内部 Root Shell 执行自定义命令 (USB / TCP ADB)</label>
             <div class="voice-input-group">
-              <input id="customShellInput" class="voice-input" value="getprop && iw dev wlan0 info" />
+              <input id="customShellInput" class="voice-input" value="id && uname -a && ip -4 addr show wlan0" />
               <button class="btn btn-primary" onclick="execCustomCameraCmd()">在相机内执行</button>
             </div>
           </div>
@@ -1038,7 +1250,7 @@
         <div class="camera-card">
           <div class="camera-card-head">
             <h3>📟 相机内部 Shell &amp; DUML 协议实时终端</h3>
-            <span class="badge badge-ok">Root @ Ambarella Linux</span>
+            <span class="badge badge-ok">Root @ eagle4_hg224</span>
           </div>
           <div id="cameraTerminal" class="terminal-box"></div>
         </div>
@@ -1046,7 +1258,7 @@
 
       <div class="camera-card">
         <div class="camera-card-head">
-          <h3>📜 驻留于相机内部的持久 STA 扩展守护脚本 (<code>/data/local/tmp/pocket_sta_agent.sh</code>)</h3>
+          <h3>📜 相机内部 STA 扩展守护脚本 (<code>/data/pocket-coffee/pocket_sta_agent.sh</code>)</h3>
           <button class="btn" onclick="copyTextById('onCameraScriptCode', '已复制相机内部驻留脚本')">📋 复制脚本源码</button>
         </div>
         <pre id="onCameraScriptCode" class="terminal-box" style="max-height:280px; color:#f3c68f;"></pre>
@@ -1067,7 +1279,7 @@
           <div class="supplement-grid" style="grid-template-columns:1fr;">
             <div class="supp-field">
               <label>手机访问局域网报告地址 (Mobile Base URL)</label>
-              <input id="cfgMobileUrl" value="http://192.168.5.84:8765" />
+              <input id="cfgMobileUrl" value="http://192.168.5.84:8788" />
             </div>
             <div class="supp-field">
               <label>企业微信机器人 Webhook URL (WeCom)</label>
@@ -1375,6 +1587,14 @@
             <div class="timeline-steps">${timelineHtml}</div>
           </div>
 
+          <!-- Beanconqueror / Visualizer.coffee Inspired Side-by-Side Shot Comparison -->
+          <div class="visualizer-box" id="shotVisualizerSection">
+            <div class="visualizer-header">
+              <h4>📊 同款豆萃取对比 (Visualizer 视图)</h4>
+              <span class="badge badge-ok">正在加载历史出品对比...</span>
+            </div>
+          </div>
+
           <!-- Social Media Share Studio (Xiaohongshu & WeChat) -->
           <div class="share-studio">
             <div class="xhs-poster" id="posterCard">
@@ -1427,6 +1647,217 @@
           </div>
         </div>
       `;
+
+      loadShotComparison(rec);
+    }
+
+    function buildDualRadarSvg(baseFp, latestFp) {
+      const keys = [
+        { k: 'acidity', label: '酸质' },
+        { k: 'sweetness', label: '甜感' },
+        { k: 'body', label: '醇厚度' },
+        { k: 'aroma', label: '香气' },
+        { k: 'aftertaste', label: '余韵' },
+        { k: 'balance', label: '平衡感' }
+      ];
+      const cx = 122, cy = 115, maxR = 74;
+      const angleStep = (Math.PI * 2) / keys.length;
+
+      let gridPolys = '';
+      [0.35, 0.68, 1.0].forEach(level => {
+        const pts = keys.map((_, i) => {
+          const a = -Math.PI / 2 + i * angleStep;
+          return `${(cx + Math.cos(a) * maxR * level).toFixed(1)},${(cy + Math.sin(a) * maxR * level).toFixed(1)}`;
+        }).join(' ');
+        gridPolys += `<polygon points="${pts}" fill="none" stroke="rgba(212,163,115,0.2)" stroke-width="1"/>`;
+      });
+
+      const makePts = (fp) => keys.map((item, i) => {
+        const val = Math.min(10, Math.max(1, Number((fp && fp[item.k]) || 7.5))) / 10.0;
+        const a = -Math.PI / 2 + i * angleStep;
+        return `${(cx + Math.cos(a) * maxR * val).toFixed(1)},${(cy + Math.sin(a) * maxR * val).toFixed(1)}`;
+      }).join(' ');
+
+      const basePts = makePts(baseFp);
+      const latestPts = makePts(latestFp);
+
+      const labelsSvg = keys.map((item, i) => {
+        const a = -Math.PI / 2 + i * angleStep;
+        const lx = cx + Math.cos(a) * (maxR + 24);
+        const ly = cy + Math.sin(a) * (maxR + 17);
+        const lScore = Number((latestFp && latestFp[item.k]) || 7.5).toFixed(1);
+        return `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="#faedcd" font-size="11" font-weight="600" text-anchor="middle" dominant-baseline="middle">${item.label} ${lScore}</text>`;
+      }).join('');
+
+      return `
+        <svg width="248" height="232" viewBox="0 0 248 232">
+          ${gridPolys}
+          <polygon points="${basePts}" fill="rgba(244, 162, 97, 0.16)" stroke="#f4a261" stroke-width="1.8" stroke-dasharray="4 3" />
+          <polygon points="${latestPts}" fill="rgba(82, 183, 136, 0.28)" stroke="#74c69d" stroke-width="2.3" />
+          ${labelsSvg}
+        </svg>
+      `;
+    }
+
+    function formatDeltaPill(delta, unit = '', invertColor = false) {
+      if (delta === null || delta === undefined || Number.isNaN(Number(delta))) {
+        return `<span class="delta-pill delta-neutral">--</span>`;
+      }
+      const num = Number(delta);
+      if (Math.abs(num) < 0.001) {
+        return `<span class="delta-pill delta-neutral">0${unit ? ' ' + unit : ''} (持平)</span>`;
+      }
+      const sign = num > 0 ? '+' : '';
+      const isGood = invertColor ? num < 0 : num > 0;
+      return `<span class="delta-pill ${isGood ? 'delta-pos' : 'delta-neg'}">${sign}${num}${unit ? ' ' + unit : ''}</span>`;
+    }
+
+    async function loadShotComparison(rec, customLeftId = '', customRightId = '') {
+      const box = document.getElementById('shotVisualizerSection');
+      if (!box || !rec) return;
+
+      const allRecords = appState.records || [];
+      const beanName = rec.bean_name || '';
+      const sameBeanPeers = allRecords.filter(r => r.id !== rec.id && beanName && (r.bean_name || '') === beanName);
+      const defaultLeft = customLeftId
+        || (sameBeanPeers[0] && sameBeanPeers[0].id)
+        || ((allRecords.find(r => r.id !== rec.id) || rec).id);
+      const defaultRight = customRightId || rec.id;
+
+      const params = new URLSearchParams();
+      if (sameBeanPeers.length > 0 && !customLeftId && !customRightId) {
+        params.set('bean', beanName);
+      }
+      params.set('left_id', defaultLeft);
+      params.set('right_id', defaultRight);
+
+      try {
+        const res = await fetch(`/api/records/compare?${params.toString()}`);
+        const cmp = await res.json();
+        const base = cmp.baseline_shot || rec;
+        const latest = cmp.latest_shot || rec;
+        const pd = cmp.parameter_deltas || {};
+        const fd = cmp.flavor_radar_delta || {};
+
+        const makeOptions = (selectedId) => allRecords.map(r => {
+          const sameFlag = beanName && r.bean_name === beanName ? '🫘 同款豆 · ' : '';
+          const label = `${sameFlag}${(r.bean_name || '未命名').slice(0, 12)} (${r.created_at.slice(5, 16)})`;
+          return `<option value="${r.id}" ${r.id === selectedId ? 'selected' : ''}>${label}</option>`;
+        }).join('');
+
+        const gDirMap = { finer: '调细', coarser: '调粗', unchanged: '一致' };
+        const grindDeltaObj = pd.grind_setting || {};
+        const grindPill = (grindDeltaObj.delta !== null && grindDeltaObj.delta !== undefined && grindDeltaObj.delta !== 0)
+          ? `<span class="delta-pill ${grindDeltaObj.delta < 0 ? 'delta-pos' : 'delta-neg'}">${gDirMap[grindDeltaObj.direction] || ''} (${grindDeltaObj.delta > 0 ? '+' : ''}${grindDeltaObj.delta})</span>`
+          : `<span class="delta-pill delta-neutral">刻度持平</span>`;
+
+        const insightsHtml = (cmp.insights || []).map(i => `<li>${i}</li>`).join('');
+
+        const radarRowsHtml = Object.values(fd).map(ax => `
+          <tr>
+            <th scope="row">✨ 风味 · ${ax.label}</th>
+            <td>${ax.baseline}</td>
+            <td><strong>${ax.latest}</strong></td>
+            <td>${formatDeltaPill(ax.delta, '分')}</td>
+          </tr>
+        `).join('');
+
+        box.innerHTML = `
+          <div class="visualizer-header">
+            <h4>
+              📊 同款豆萃取对比 (Visualizer 视图)
+              <span class="badge badge-ok">${sameBeanPeers.length > 0 ? `同款豆历史 ${sameBeanPeers.length + 1} 杯` : '跨批次参数对标'}</span>
+            </h4>
+            <div class="visualizer-controls">
+              <label style="font-size:12px; color:var(--text-muted);" for="cmpLeftSelect">Shot A (基准):</label>
+              <select id="cmpLeftSelect" class="shot-select" onchange="onComparisonSelectChange('${rec.id}')">${makeOptions(base.id)}</select>
+              <span style="color:var(--crema);">➔</span>
+              <label style="font-size:12px; color:var(--text-muted);" for="cmpRightSelect">Shot B (当前):</label>
+              <select id="cmpRightSelect" class="shot-select" onchange="onComparisonSelectChange('${rec.id}')">${makeOptions(latest.id)}</select>
+            </div>
+          </div>
+
+          <div class="visualizer-layout">
+            <div class="radar-box" style="width:100%;">
+              <h4>🕸️ 双杯风味雷达叠图</h4>
+              ${buildDualRadarSvg(base.flavor_profile || {}, latest.flavor_profile || {})}
+              <div style="display:flex; gap:12px; font-size:11.5px; margin-top:4px;">
+                <span style="color:#f4a261;">┄ Shot A 基准杯</span>
+                <span style="color:#74c69d;">━ Shot B 当前杯</span>
+              </div>
+            </div>
+
+            <div>
+              <div tabindex="0" role="region" aria-labelledby="shot-compare-caption" class="table-wrapper">
+                <table class="compare-table">
+                  <caption id="shot-compare-caption">
+                    Shot A [${(base.bean_name || '').slice(0, 14)} · ${base.created_at.slice(5, 16)}] 对比 Shot B [${(latest.bean_name || '').slice(0, 14)} · ${latest.created_at.slice(5, 16)}]
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">核心萃取与感官指标</th>
+                      <th scope="col">历史基准 (Shot A)</th>
+                      <th scope="col">当前对比 (Shot B)</th>
+                      <th scope="col">调整差值 (Delta)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <th scope="row">⚖️ 咖啡豆称重 (Dose)</th>
+                      <td>${base.bean_weight_g ?? '--'} g</td>
+                      <td><strong>${latest.bean_weight_g ?? '--'} g</strong></td>
+                      <td>${formatDeltaPill(pd.bean_weight_g && pd.bean_weight_g.delta, 'g')}</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">🎯 研磨度刻度 (Grind)</th>
+                      <td>${base.grind_setting || '--'}</td>
+                      <td><strong>${latest.grind_setting || '--'}</strong></td>
+                      <td>${grindPill}</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">💧 萃取液重 (Yield)</th>
+                      <td>${base.yield_g ?? '--'} g</td>
+                      <td><strong>${latest.yield_g ?? '--'} g</strong></td>
+                      <td>${formatDeltaPill(pd.yield_g && pd.yield_g.delta, 'g')}</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">📐 粉液比 (Brew Ratio)</th>
+                      <td>${base.brew_ratio || '--'}</td>
+                      <td><strong>${latest.brew_ratio || '--'}</strong></td>
+                      <td>${formatDeltaPill(pd.brew_ratio && pd.brew_ratio.delta, '')}</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">⏱️ 萃取时间 (Time)</th>
+                      <td>${base.extraction_time_s ?? '--'} s</td>
+                      <td><strong>${latest.extraction_time_s ?? '--'} s</strong></td>
+                      <td>${formatDeltaPill(pd.extraction_time_s && pd.extraction_time_s.delta, 's')}</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">🧭 萃取压力 (Pressure)</th>
+                      <td>${base.pressure_bar ?? '--'} bar</td>
+                      <td><strong>${latest.pressure_bar ?? '--'} bar</strong></td>
+                      <td>${formatDeltaPill(pd.pressure_bar && pd.pressure_bar.delta, 'bar')}</td>
+                    </tr>
+                    ${radarRowsHtml}
+                  </tbody>
+                </table>
+              </div>
+              <ul class="suggestion-list" style="margin-top:12px;">${insightsHtml}</ul>
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        box.innerHTML = `<div style="font-size:12.5px; color:var(--text-muted);">萃取对比数据加载失败: ${err}</div>`;
+      }
+    }
+
+    function onComparisonSelectChange(recId) {
+      const rec = (appState.records || []).find(r => r.id === recId) || appState.records[0];
+      const leftEl = document.getElementById('cmpLeftSelect');
+      const rightEl = document.getElementById('cmpRightSelect');
+      if (rec && leftEl && rightEl) {
+        loadShotComparison(rec, leftEl.value, rightEl.value);
+      }
     }
 
     function renderBeansTab() {
@@ -1463,7 +1894,7 @@
       const usbEl = document.getElementById('usbProbeStatusText');
       if (usbEl) {
         const serials = (usb.serial_ports || []).join(', ') || '未检测到 DJI 串口';
-        usbEl.innerHTML = `当前已连接 DJI 串口/音频节点: <code>${serials}</code> | 相机 USB-C 直连状态: <strong>${usb.camera_usb_connected ? '🟢 已连接真机' : '⚪ 等待插入 Pocket 3 / Pocket 4 Pro USB-C 数据线'}</strong>`;
+        usbEl.innerHTML = `当前已连接 DJI 串口/音频节点: <code>${serials}</code> | 相机 USB-C 直连状态: <strong>${usb.camera_usb_connected ? '🟢 已连接真机 (' + (usb.detected_camera_product || 'OsmoPocket') + ')' : '⚪ 等待插入 Pocket 3 / Pocket 4 Pro USB-C 数据线'}</strong>`;
       }
     }
 
@@ -1531,28 +1962,61 @@
       const cameras = camData.cameras || {};
       const grid = document.getElementById('cameraNodesGrid');
 
-      grid.innerHTML = Object.values(cameras).map(c => `
-        <div class="camera-card">
-          <div class="camera-card-head">
-            <h3>📷 ${c.model}</h3>
-            <span class="badge ${c.recording_state === 'recording' ? 'badge-warn' : 'badge-ok'}">
-              ${c.wifi_mode} 持久在线 · ${c.recording_state === 'recording' ? '🔴 正在录制' : '🟢 待命'}
-            </span>
+      grid.innerHTML = Object.values(cameras).map(c => {
+        const v = c.verification || {};
+        const staVerified = Boolean(v.sta_connection_verified && v.heartbeat_verified);
+        const verifiedIp = v.verified_sta_ip || c.lan_ip || '';
+        const mediaUrl = c.latest_media_url || v.media_http_url || '';
+        const mediaDisplay = mediaUrl || (verifiedIp ? `http://${verifiedIp}:${c.http_media_port || 8088}/DJI_001/` : '未就绪');
+        const persistenceStatus = v.persistence_status || (v.persistence_verified ? 'verified' : 'not_tested');
+        const persistenceNote = v.note || '尚未执行实机 ADB 与 STA 心跳核验。';
+        const daemonLabel = [
+          c.internal_daemon_version || '未部署',
+          c.battery_percent !== null && c.battery_percent !== undefined ? `电量 ${c.battery_percent}%` : null,
+          c.sd_free_gb !== null && c.sd_free_gb !== undefined ? `剩余 ${c.sd_free_gb}GB` : null
+        ].filter(Boolean).join(' · ');
+
+        const statusBadge = c.recording_state === 'recording'
+          ? `<span class="badge badge-warn">🔴 正在录制 (${c.wifi_mode})</span>`
+          : (staVerified
+            ? `<span class="badge badge-ok">🟢 STA 实测在线 (${v.status || 'live_sta_heartbeat'})</span>`
+            : `<span class="badge badge-warn">⚪ ${v.status || c.wifi_mode || '未验证'}</span>`);
+
+        const previewBtnHtml = mediaUrl
+          ? `<button class="btn btn-primary" onclick="previewCameraMedia('${c.device_id}', '${mediaUrl}')">🎬 预览/拉取相机最新录制视频 (:8088)</button>`
+          : `<button class="btn" onclick="previewCameraMedia('${c.device_id}', '')">🔄 探测相机 :8088 媒体列表</button>`;
+
+        return `
+          <div class="camera-card">
+            <div class="camera-card-head">
+              <h3>📷 ${c.model} ${v.usb_product ? `<span style="font-size:12px; color:var(--crema); font-weight:500;">(${v.usb_product})</span>` : ''}</h3>
+              ${statusBadge}
+            </div>
+
+            <div class="kv-list">
+              <div class="kv-item"><span>实测 STA IP (verified_sta_ip)</span><code>${verifiedIp || '未分配'}</code></div>
+              <div class="kv-item"><span>最近心跳 (last_heartbeat)</span><code>${c.last_heartbeat ? c.last_heartbeat.slice(0, 19).replace('T', ' ') : '暂无心跳'}</code></div>
+              <div class="kv-item"><span>无线网卡 MAC (mac_address)</span><code>${c.mac_address || '未采集'}</code></div>
+              <div class="kv-item"><span>连接路由器 SSID / ADB 序列号</span><code>${c.ssid || '--'} / ${c.adb_serial || '--'}</code></div>
+              <div class="kv-item" style="grid-column: 1 / -1;"><span>:8088 HTTP 媒体直拉地址 (media_http_url)</span><code>${mediaDisplay}</code></div>
+              <div class="kv-item" style="grid-column: 1 / -1;"><span>内部守护进程 (/data/pocket-coffee)</span><code>${daemonLabel}</code></div>
+            </div>
+
+            <div class="persistence-box">
+              <div><strong style="color:var(--accent-amber);">🔒 持久化边界 (persistence_status):</strong> <code>${persistenceStatus}</code></div>
+              <div style="margin-top:4px; color:var(--text-muted); line-height:1.45;">${persistenceNote}</div>
+            </div>
+
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              ${previewBtnHtml}
+              <button class="btn" onclick="triggerCameraShutter('${c.device_id}', 'start')">▶️ 触发开录 (DUML 02:02)</button>
+              <button class="btn btn-danger" onclick="triggerCameraShutter('${c.device_id}', 'stop')">⏹️ 停止录制</button>
+            </div>
+
+            <div id="mediaPreview_${c.device_id}"></div>
           </div>
-          <div class="kv-list">
-            <div class="kv-item"><span>局域网固定 IP (STA)</span><code>${c.lan_ip}</code></div>
-            <div class="kv-item"><span>连接路由器 SSID</span><code>${c.ssid}</code></div>
-            <div class="kv-item"><span>内部 Root Shell (ADB TCP)</span><code>${c.lan_ip}:${c.adb_port}</code></div>
-            <div class="kv-item"><span>内部 BusyBox 媒体直拉服务</span><code>http://${c.lan_ip}:${c.http_media_port}/</code></div>
-            <div class="kv-item"><span>RTSP 实时音视频流</span><code>${c.rtsp_url}</code></div>
-            <div class="kv-item"><span>内部扩展守护版本</span><code>${c.internal_daemon_version} (电量 ${c.battery_percent}%)</code></div>
-          </div>
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="btn btn-primary" onclick="triggerCameraShutter('${c.device_id}', 'start')">▶️ 局域网触发开始录制 (DUML 02:02)</button>
-            <button class="btn btn-danger" onclick="triggerCameraShutter('${c.device_id}', 'stop')">⏹️ 局域网停止录制并拉取视频</button>
-          </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
 
       const logs = camData.command_log || [];
       document.getElementById('cameraTerminal').innerHTML = logs.map(l => `
@@ -1565,9 +2029,76 @@
       document.getElementById('onCameraScriptCode').textContent = appState.on_camera_script || '';
     }
 
+    async function previewCameraMedia(deviceId, fallbackUrl) {
+      const container = document.getElementById(`mediaPreview_${deviceId}`);
+      if (!container) return;
+      container.innerHTML = `<div class="media-preview-drawer">⏳ 正在从 <code>/api/camera/media?device_id=${deviceId}</code> 获取相机 :8088 最新媒体列表...</div>`;
+
+      try {
+        const res = await fetch(`/api/camera/media?device_id=${encodeURIComponent(deviceId)}`);
+        const data = await res.json();
+        const activeUrl = data.latest_media_url || fallbackUrl || '';
+        const files = data.files || [];
+        const fileListHtml = files.slice(0, 5).map(f => `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px dashed rgba(212,163,115,0.14); font-size:12px;">
+            <code>${f.name} (${f.size_bytes ? (f.size_bytes / (1024 * 1024)).toFixed(2) + ' MB' : 'MP4'})</code>
+            <div style="display:flex; gap:6px;">
+              <a class="btn" style="padding:4px 8px; font-size:11.5px; text-decoration:none;" href="${f.url}" target="_blank" rel="noopener">⬇️ 直拉下载</a>
+              <button class="btn btn-primary" style="padding:4px 8px; font-size:11.5px;" onclick="triggerMediaWebhook('${deviceId}', '${f.url}')">⚡ 解析成咖啡报告</button>
+            </div>
+          </div>
+        `).join('');
+
+        if (!activeUrl) {
+          container.innerHTML = `
+            <div class="media-preview-drawer">
+              <div style="font-size:12.5px; color:var(--accent-amber);">当前相机暂未上报可用的 :8088 MP4 地址（目录: <code>${data.dcim_root || '/mnt/media_rw/emulated/DCIM/DJI_001'}</code>）。</div>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = `
+          <div class="media-preview-drawer">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <strong style="font-size:13px; color:#74c69d;">🎬 相机内部 BusyBox :8088 实测视频直拉预览</strong>
+              <div style="display:flex; gap:8px;">
+                <a class="btn" style="padding:5px 10px; font-size:12px; text-decoration:none;" href="${activeUrl}" target="_blank" rel="noopener">🔗 在新窗口打开/下载 MP4</a>
+                <button class="btn btn-primary" style="padding:5px 10px; font-size:12px;" onclick="triggerMediaWebhook('${deviceId}', '${activeUrl}')">⚡ 用此视频生成 AI 咖啡报告</button>
+              </div>
+            </div>
+            <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">当前流地址: <code>${activeUrl}</code></div>
+            <video controls preload="metadata" src="${activeUrl}"></video>
+            ${fileListHtml ? `<div style="margin-top:10px;"><div style="font-size:12px; color:var(--crema-bright); margin-bottom:4px;">📂 相机 DCIM 远程文件列表:</div>${fileListHtml}</div>` : ''}
+          </div>
+        `;
+        showToast('🎬 已加载相机 :8088 最新录制视频预览');
+      } catch (err) {
+        container.innerHTML = `<div class="media-preview-drawer" style="color:var(--accent-red); font-size:12px;">拉取相机媒体信息失败: ${err}</div>`;
+      }
+    }
+
+    async function triggerMediaWebhook(deviceId, mediaUrl) {
+      const res = await fetch('/api/camera/webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          device_id: deviceId,
+          media_url: mediaUrl
+        })
+      });
+      const data = await res.json();
+      if (data.ok && data.record) {
+        currentRecordId = data.record.id;
+        await fetchState();
+        switchTab('reports');
+        showToast(`☕️ 已通过相机 :8088 视频 (${mediaUrl.split('/').pop()}) 生成萃取报告！`);
+      }
+    }
+
     function renderNotifyTab() {
       const cfg = appState.notification_config || {};
-      document.getElementById('cfgMobileUrl').value = cfg.mobile_base_url || 'http://192.168.5.84:8765';
+      document.getElementById('cfgMobileUrl').value = cfg.mobile_base_url || 'http://192.168.5.84:8788';
       document.getElementById('cfgWecomUrl').value = cfg.wecom_webhook_url || '';
       document.getElementById('cfgServerChan').value = cfg.serverchan_sendkey || '';
       document.getElementById('cfgBarkUrl').value = cfg.bark_url || '';

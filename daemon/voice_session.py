@@ -7,6 +7,7 @@ revision history.
 """
 
 from datetime import datetime
+import os
 from typing import Any, Dict, List, Optional
 
 from core.analyzer import enrich_barista_analysis, extract_parameters_from_transcript
@@ -14,6 +15,7 @@ from core.bean_equipment_store import BeanAndEquipmentManager
 from core.camera_sta_bridge import CameraInternalBridge
 from core.context_engine import SessionContextCompactor
 from core.models import CoffeeRecord
+from core.multimodal_vision import MultimodalVisionEngine
 from core.notifier import NotificationManager
 from core.registry import global_event_bus
 from core.store import CoffeeStore
@@ -35,6 +37,7 @@ class VoiceWakeupSessionManager:
         self.notifier = notifier
         self.compactor = SessionContextCompactor()
         self.bean_manager = BeanAndEquipmentManager(store.data_dir)
+        self.vision_engine = MultimodalVisionEngine(store.data_dir)
         self.active_session: Dict[str, Any] = {
             "session_id": f"sess-{datetime.now().strftime('%H%M%S')}",
             "state": "standby_listening",  # "standby_listening" | "recording" | "processing"
@@ -113,6 +116,8 @@ class VoiceWakeupSessionManager:
         reason: str = "检测到萃取完成 & 静默超时，自动停止录制",
         override_transcript: Optional[str] = None,
         camera_id: Optional[str] = None,
+        media_url: Optional[str] = None,
+        video_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         cam_id = camera_id or self.active_session.get("camera_id", "pocket4p")
         cam_state = self.camera_bridge.load_state()["cameras"].get(cam_id, {})
@@ -122,7 +127,34 @@ class VoiceWakeupSessionManager:
         # 1. Stop camera over LAN STA
         shutter_stop = self.camera_bridge.trigger_lan_recording(cam_id, action="stop")
 
-        # 2. Assemble utterances & run lossless compaction
+        # 2. Resolve camera media URL and verified /mnt/media_rw/emulated/DCIM/DJI_001/... path
+        discovered_media_url = (
+            (media_url or "").strip()
+            or (cam_state.get("latest_media_url") or "").strip()
+            or (cam_state.get("verification", {}).get("media_http_url") or "").strip()
+            or None
+        )
+        latest_file_name = (
+            os.path.basename(cam_state.get("latest_media_file") or "")
+            or (os.path.basename(discovered_media_url) if discovered_media_url else "")
+            or f"DJI_{datetime.now().strftime('%Y%m%d_%H%M%S')}.MP4"
+        )
+        default_camera_path = f"/mnt/media_rw/emulated/DCIM/DJI_001/{latest_file_name}"
+
+        explicit_video_path = (video_path or "").strip() or None
+        explicit_media_url = (media_url or "").strip() or None
+        if explicit_video_path and os.path.isfile(explicit_video_path):
+            video_file = explicit_video_path
+        elif explicit_media_url:
+            video_file = explicit_media_url
+        elif explicit_video_path:
+            video_file = explicit_video_path
+        elif discovered_media_url:
+            video_file = discovered_media_url
+        else:
+            video_file = default_camera_path
+
+        # 3. Assemble utterances & run lossless compaction
         if override_transcript is not None:
             utterances = [{"text": override_transcript.strip(), "source": "voice_utterance", "timestamp": datetime.now().strftime("%H:%M:%S")}]
             full_transcript = override_transcript.strip()
@@ -133,23 +165,32 @@ class VoiceWakeupSessionManager:
             ]
             full_transcript = " ".join(self.active_session.get("transcript_chunks", [])).strip()
 
+        if not full_transcript and os.path.isfile(video_file):
+            full_transcript = self.vision_engine.extract_audio_and_transcribe(video_file, fallback_transcript="")
+
         if not full_transcript:
             full_transcript = "我要开始制作咖啡。今天用的是埃塞俄比亚耶加雪菲水洗浅烘，豆子称重18克，独立磨豆机 Niche Zero 刻度 15，做意式浓缩，9 bar 萃取 28 秒，出液 36 克。"
             utterances = [{"text": full_transcript, "source": "voice_utterance", "timestamp": datetime.now().strftime("%H:%M:%S")}]
 
         compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
 
-        # 3. Match against Personal Bean Library & Default Equipment Presets
+        # 4. Run MultimodalVisionEngine keyframe inspection & match Personal Bean Library
+        vision_analysis = self.vision_engine.analyze_video_keyframes(
+            video_path=video_file,
+            spoken_transcript=full_transcript,
+            camera_device=model,
+        )
+
         lib_data = self.bean_manager.load_all()
         matched_bean = self.bean_manager.match_bean_by_text(full_transcript)
-        overrides: Dict[str, Any] = dict(compacted.canonical_parameters)
+        overrides: Dict[str, Any] = dict(vision_analysis.get("visual_fields") or {})
+        overrides.update(compacted.canonical_parameters)
         if matched_bean:
             overrides["_bean_library_match"] = matched_bean
         if lib_data.get("equipment"):
             overrides["_equipment_defaults"] = lib_data["equipment"]
 
-        # 4. Build CoffeeRecord from canonical parameters + Bean Library + Equipment Defaults
-        video_file = f"/storage/sdcard0/DCIM/DJI_001/DJI_{datetime.now().strftime('%Y%m%d_%H%M%S')}.MP4"
+        # 5. Build CoffeeRecord from canonical parameters + Bean Library + Equipment Defaults
         record = extract_parameters_from_transcript(
             transcript=full_transcript,
             camera_device=model,
@@ -166,11 +207,11 @@ class VoiceWakeupSessionManager:
         enrich_barista_analysis(record)
         self.store.save_record(record)
 
-        # 4. Dispatch mobile push notification
+        # 6. Dispatch mobile push notification
         notif = self.notifier.notify_brew_record(record)
         global_event_bus.publish("session.completed", {"record_id": record.id, "compacted": compacted.to_dict()})
 
-        # 5. Reset session back to standby listening
+        # 7. Reset session back to standby listening
         self.active_session = {
             "session_id": f"sess-{datetime.now().strftime('%H%M%S')}",
             "state": "standby_listening",
@@ -189,6 +230,10 @@ class VoiceWakeupSessionManager:
         return {
             "auto_stopped": True,
             "reason": reason,
+            "media_url": discovered_media_url,
+            "video_path": video_file,
+            "camera_file_path": explicit_video_path or default_camera_path,
+            "vision_analysis": vision_analysis,
             "session": self.active_session,
             "compacted_context": compacted.to_dict(),
             "record": record.to_dict(),

@@ -3,21 +3,25 @@ Pocket Coffee Log HTTP API & Web Server.
 
 Provides REST endpoints for:
 - `/api/state`: Full dashboard state (coffee records, active voice session, camera STA nodes, notification logs)
+- `/api/camera/sta`: Verified camera STA state and network configuration
+- `/api/camera/media`: Latest camera media info & `:8088` remote DCIM file listing
+- `/api/records/compare`: Visualizer / Beanconqueror style side-by-side shot comparison (`?bean=...`)
 - `/api/voice/utterance`: Feed spoken voice transcript ("我要开始制作咖啡...", parameter narration, "制作完成")
 - `/api/voice/stop`: Manually or automatically stop recording and trigger AI report generation
 - `/api/records/supplement`: Fill in missing coffee parameters from mobile notification reminder
 - `/api/camera/provision_sta`: Switch Pocket 3 / Pocket 4 Pro into persistent LAN STA mode & deploy internal agent
-- `/api/camera/exec`: Execute root shell commands inside the camera over LAN ADB (:5555)
+- `/api/camera/exec`: Execute root shell commands inside the camera over USB/LAN ADB
 - `/api/camera/shutter`: Trigger LAN DUML [02:02] Start/Stop recording
-- `/api/camera/webhook`: Receive automatic webhook from `/data/local/tmp/pocket_sta_agent.sh` inside camera when MP4 closes
+- `/api/camera/webhook`: Receive automatic webhook from `/data/pocket-coffee/pocket_sta_agent.sh` inside camera when MP4 closes
 - `/api/notifications/config`: Update WeCom / ServerChan / Bark / Feishu push credentials
 """
 
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import json
 import os
+import re
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -61,6 +65,190 @@ if not notifier.get_history():
         notifier.notify_brew_record(rec)
 
 
+def _extract_first_float(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)", str(val))
+    return float(m.group(1)) if m else None
+
+
+def _extract_ratio_value(rec_dict: Dict[str, Any]) -> Optional[float]:
+    ratio_str = rec_dict.get("brew_ratio") or ""
+    if ":" in str(ratio_str):
+        right = str(ratio_str).split(":", 1)[1]
+        parsed = _extract_first_float(right)
+        if parsed is not None:
+            return parsed
+    w = rec_dict.get("bean_weight_g")
+    y = rec_dict.get("yield_g")
+    if isinstance(w, (int, float)) and w > 0 and isinstance(y, (int, float)):
+        return round(float(y) / float(w), 2)
+    return None
+
+
+def build_shot_comparison(
+    records: List[Dict[str, Any]],
+    bean: str = "",
+    brew_method: str = "",
+    left_id: str = "",
+    right_id: str = "",
+) -> Dict[str, Any]:
+    """
+    Beanconqueror / Visualizer.coffee inspired side-by-side shot comparison.
+    Compares historical brews of the same bean or brew method across dose weight,
+    grind setting, yield, brew ratio, extraction time, pressure, and 6-axis flavor radar.
+    """
+    bean_q = (bean or "").strip()
+    method_q = (brew_method or "").strip()
+
+    matched = list(records)
+    if bean_q:
+        matched = [r for r in matched if bean_q.lower() in (r.get("bean_name") or "").lower()]
+    if method_q:
+        matched = [r for r in matched if method_q.lower() in (r.get("brew_method") or "").lower()]
+
+    by_id = {r.get("id"): r for r in records if r.get("id")}
+    baseline_shot: Optional[Dict[str, Any]] = by_id.get(left_id) if left_id else None
+    latest_shot: Optional[Dict[str, Any]] = by_id.get(right_id) if right_id else None
+
+    if latest_shot is None and matched:
+        latest_shot = matched[0]
+    if baseline_shot is None:
+        if len(matched) >= 2:
+            baseline_shot = matched[1] if matched[0].get("id") == (latest_shot or {}).get("id") else matched[0]
+        elif matched:
+            baseline_shot = matched[0]
+
+    if not baseline_shot or not latest_shot:
+        return {
+            "ok": True,
+            "query": {"bean": bean_q, "brew_method": method_q, "left_id": left_id, "right_id": right_id},
+            "matched_count": len(matched),
+            "records": matched,
+            "baseline_shot": baseline_shot,
+            "latest_shot": latest_shot,
+            "parameter_deltas": {},
+            "flavor_radar_delta": {},
+            "insights": ["暂无足够的同款咖啡豆或同方式历史记录可供对比。"],
+        }
+
+    def num_delta(field: str, unit: str = "") -> Dict[str, Any]:
+        b_val = baseline_shot.get(field)
+        l_val = latest_shot.get(field)
+        d_val = (
+            round(float(l_val) - float(b_val), 2)
+            if isinstance(b_val, (int, float)) and isinstance(l_val, (int, float))
+            else None
+        )
+        return {"baseline": b_val, "latest": l_val, "delta": d_val, "unit": unit}
+
+    b_grind_str = baseline_shot.get("grind_setting")
+    l_grind_str = latest_shot.get("grind_setting")
+    b_grind_num = _extract_first_float(b_grind_str)
+    l_grind_num = _extract_first_float(l_grind_str)
+    grind_delta = (
+        round(l_grind_num - b_grind_num, 2)
+        if (b_grind_num is not None and l_grind_num is not None)
+        else None
+    )
+    grind_direction = (
+        "finer"
+        if (grind_delta is not None and grind_delta < 0)
+        else ("coarser" if (grind_delta is not None and grind_delta > 0) else "unchanged")
+    )
+
+    b_ratio_num = _extract_ratio_value(baseline_shot)
+    l_ratio_num = _extract_ratio_value(latest_shot)
+    ratio_delta = (
+        round(l_ratio_num - b_ratio_num, 2)
+        if (b_ratio_num is not None and l_ratio_num is not None)
+        else None
+    )
+
+    parameter_deltas = {
+        "bean_weight_g": num_delta("bean_weight_g", "g"),
+        "grind_setting": {
+            "baseline": b_grind_str,
+            "latest": l_grind_str,
+            "baseline_num": b_grind_num,
+            "latest_num": l_grind_num,
+            "delta": grind_delta,
+            "direction": grind_direction,
+        },
+        "yield_g": num_delta("yield_g", "g"),
+        "brew_ratio": {
+            "baseline": baseline_shot.get("brew_ratio"),
+            "latest": latest_shot.get("brew_ratio"),
+            "baseline_num": b_ratio_num,
+            "latest_num": l_ratio_num,
+            "delta": ratio_delta,
+        },
+        "extraction_time_s": num_delta("extraction_time_s", "s"),
+        "pressure_bar": num_delta("pressure_bar", "bar"),
+        "water_temp_c": num_delta("water_temp_c", "°C"),
+    }
+
+    radar_axes = [
+        ("acidity", "酸质"),
+        ("sweetness", "甜感"),
+        ("body", "醇厚度"),
+        ("aroma", "香气"),
+        ("aftertaste", "余韵"),
+        ("balance", "平衡感"),
+    ]
+    b_fp = baseline_shot.get("flavor_profile") or {}
+    l_fp = latest_shot.get("flavor_profile") or {}
+    flavor_radar_delta: Dict[str, Dict[str, Any]] = {}
+    for axis, label in radar_axes:
+        bv = round(float(b_fp.get(axis, 0.0)), 2)
+        lv = round(float(l_fp.get(axis, 0.0)), 2)
+        flavor_radar_delta[axis] = {
+            "label": label,
+            "baseline": bv,
+            "latest": lv,
+            "delta": round(lv - bv, 2),
+        }
+
+    insights: List[str] = []
+    if baseline_shot.get("id") == latest_shot.get("id"):
+        insights.append("当前仅匹配到 1 杯记录，再做一杯同款豆即可查看参数微调前后的萃取演化差值。")
+    else:
+        if grind_delta is not None and grind_delta != 0:
+            dir_cn = "调细" if grind_delta < 0 else "调粗"
+            insights.append(f"研磨刻度由「{b_grind_str}」{dir_cn}至「{l_grind_str}」(Δ {grind_delta:+.2f})。")
+        t_delta = parameter_deltas["extraction_time_s"]["delta"]
+        if t_delta is not None and t_delta != 0:
+            insights.append(
+                f"萃取时间由 {baseline_shot.get('extraction_time_s')}s 变为 {latest_shot.get('extraction_time_s')}s (Δ {t_delta:+.1f}s)。"
+            )
+        if ratio_delta is not None and ratio_delta != 0:
+            insights.append(
+                f"粉液比由 {baseline_shot.get('brew_ratio') or f'1:{b_ratio_num}'} 调整为 {latest_shot.get('brew_ratio') or f'1:{l_ratio_num}'} (Δ {ratio_delta:+.2f})。"
+            )
+        sw_delta = flavor_radar_delta["sweetness"]["delta"]
+        bal_delta = flavor_radar_delta["balance"]["delta"]
+        if sw_delta != 0 or bal_delta != 0:
+            insights.append(
+                f"感官雷达变化：甜感 {sw_delta:+.1f}、平衡感 {bal_delta:+.1f}、醇厚度 {flavor_radar_delta['body']['delta']:+.1f}。"
+            )
+        if not insights:
+            insights.append("两杯核心萃取参数保持高度一致，出品稳定性优异。")
+
+    return {
+        "ok": True,
+        "query": {"bean": bean_q, "brew_method": method_q, "left_id": left_id, "right_id": right_id},
+        "matched_count": len(matched),
+        "records": matched,
+        "baseline_shot": baseline_shot,
+        "latest_shot": latest_shot,
+        "parameter_deltas": parameter_deltas,
+        "flavor_radar_delta": flavor_radar_delta,
+        "insights": insights,
+    }
+
+
 class CoffeeRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC_DIR, **kwargs)
@@ -96,9 +284,78 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        qs = parse_qs(parsed.query)
 
         if path == "/api/camera/sta":
             self._send_json(camera_bridge.sta_status())
+            return
+
+        if path == "/api/camera/media":
+            device_id = (qs.get("device_id") or ["pocket4p"])[0]
+            cam_state = camera_bridge.load_state()
+            cam = cam_state.get("cameras", {}).get(device_id)
+            if cam is None:
+                self._send_json({"ok": False, "error": f"Unknown camera device_id: {device_id}"}, status=404)
+                return
+
+            verification = cam.get("verification") or {}
+            lan_ip = verification.get("verified_sta_ip") or cam.get("lan_ip") or ""
+            http_media_port = cam.get("http_media_port", 8088)
+            latest_media_url = cam.get("latest_media_url") or verification.get("media_http_url") or ""
+            latest_media_file = cam.get("latest_media_file") or (
+                os.path.basename(latest_media_url) if latest_media_url else ""
+            )
+
+            remote_listing: Optional[Dict[str, Any]] = None
+            files: List[Dict[str, Any]] = []
+            if hasattr(camera_bridge, "list_remote_media"):
+                try:
+                    remote_listing = camera_bridge.list_remote_media(device_id)
+                except TypeError:
+                    remote_listing = camera_bridge.list_remote_media()
+                except Exception as exc:
+                    remote_listing = {"ok": False, "error": str(exc)}
+
+                if isinstance(remote_listing, dict) and isinstance(remote_listing.get("files"), list):
+                    files = remote_listing["files"]
+                    if not latest_media_url and files:
+                        latest_media_url = files[0].get("url", "")
+                        latest_media_file = files[0].get("name", "")
+
+            self._send_json({
+                "ok": True,
+                "device_id": device_id,
+                "model": cam.get("model", ""),
+                "lan_ip": lan_ip,
+                "http_media_port": http_media_port,
+                "media_base_url": f"http://{lan_ip}:{http_media_port}/DJI_001/" if lan_ip else "",
+                "latest_media_file": latest_media_file,
+                "latest_media_url": latest_media_url,
+                "media_http_verified": bool(verification.get("media_http_verified")),
+                "dcim_root": "/mnt/media_rw/emulated/DCIM/DJI_001",
+                "files": files,
+                "remote_listing": remote_listing,
+            })
+            return
+
+        if path == "/api/records/compare":
+            bean_q = (qs.get("bean") or [""])[0]
+            method_q = (qs.get("brew_method") or qs.get("method") or [""])[0]
+            left_id = (qs.get("left_id") or [""])[0]
+            right_id = (qs.get("right_id") or [""])[0]
+            if not left_id and not right_id and qs.get("record_ids"):
+                parts = [p.strip() for p in qs["record_ids"][0].split(",") if p.strip()]
+                if len(parts) >= 2:
+                    left_id, right_id = parts[0], parts[1]
+            records = [r.to_dict() for r in store.list_records()]
+            comparison = build_shot_comparison(
+                records=records,
+                bean=bean_q,
+                brew_method=method_q,
+                left_id=left_id,
+                right_id=right_id,
+            )
+            self._send_json(comparison)
             return
 
         if path == "/api/state":
@@ -171,11 +428,15 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
         if path == "/api/voice/stop":
             transcript = body.get("transcript")
             cam_id = body.get("camera_id")
+            media_url = body.get("media_url")
+            video_path = body.get("video_path") or body.get("file_path")
             reason = body.get("reason", "检测到咖啡制作结束，自动停止录制并生成报告")
             result = voice_manager.stop_and_process(
                 reason=reason,
                 override_transcript=transcript,
                 camera_id=cam_id,
+                media_url=media_url,
+                video_path=video_path,
             )
             self._send_json({"ok": True, **result})
             return
@@ -253,13 +514,22 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/camera/webhook":
-            # Triggered automatically by /data/local/tmp/pocket_sta_agent.sh inside Pocket 3 / Pocket 4 Pro
-            camera_model = body.get("camera", "DJI Osmo Pocket 4 Pro")
-            file_path = body.get("file_path", "/storage/sdcard0/DCIM/DJI_001/DJI_AUTO.MP4")
+            # Triggered automatically by /data/pocket-coffee/pocket_sta_agent.sh inside Pocket 3 / Pocket 4 Pro
+            camera_id = body.get("device_id") or (
+                "pocket3" if "Pocket 3" in str(body.get("camera", "")) else None
+            )
+            file_path = body.get("file_path") or body.get("video_path")
+            media_url = body.get("media_url")
             transcript = body.get("transcript")
+            clip_name = os.path.basename(
+                file_path or media_url or "/mnt/media_rw/emulated/DCIM/DJI_001/DJI_AUTO.MP4"
+            )
             res = voice_manager.stop_and_process(
-                reason=f"相机内部守护进程推送新视频 ({os.path.basename(file_path)})",
+                reason=f"相机内部守护进程推送新视频 ({clip_name})",
                 override_transcript=transcript,
+                camera_id=camera_id,
+                media_url=media_url,
+                video_path=file_path,
             )
             self._send_json({"ok": True, "webhook_processed": True, **res})
             return

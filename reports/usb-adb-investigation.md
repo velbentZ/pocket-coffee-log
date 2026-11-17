@@ -810,3 +810,97 @@ Validation for this live run: `make test` passed all 17 tests;
 `sh -n data/pocket_sta_agent.sh` and `git diff --check` succeeded.
 No implementation behavior was changed; configuration and evidence were updated.
 The running receiver continues updating the runtime heartbeat config after this snapshot.
+
+## 2026-11-18 Live telemetry and automatic MP4 watcher
+
+Implemented and deployed `v4-hg224-media` within the implementation agent's
+assigned files. USB ADB serial `123456789ABCDEF` remained `device` before and
+after deployment. No adbd restart, TCP ADB enablement, USB configuration change,
+reboot, or firmware modification was performed. No recording command was sent
+during this verification.
+
+The exported script and Python `ON_CAMERA_AGENT_SCRIPT` are identical. Local
+and camera SHA256:
+`69844a2ec24f5082ae384b088f9940d056c74167557ed3749ecd76123fd0c9ea`.
+Pushed to `/data/pocket-coffee/pocket_sta_agent.sh`, validated with the camera's
+`/system/bin/sh -n`, and set mode 755. Read old PID 5206 from `agent.pid`, checked
+its `/proc/5206/cmdline`, sent TERM, and waited for its exit. Started the updated
+script using `/sbin/busybox nohup /system/bin/sh`; new PID was 7949. The existing
+httpd remained available on port 8088; the agent's additional httpd launch logged
+`Address already in use`, with no effect on the existing media service.
+The watcher initialized `last_mp4.txt` to `DJI_20260813111516_0034_D.MP4`, so old
+files were not emitted as new webhook events.
+
+The camera's `busybox df -k /mnt/media_rw/emulated` wraps its device-name line:
+
+```text
+Filesystem           1K-blocks      Used Available Use% Mounted on
+/dev/block/by-name/media
+                     109242368   3108352 106134016   3% /mnt/media_rw/emulated
+```
+
+The agent reads Available relative to the trailing columns, obtaining
+106134016 KiB / 1048576 = **101.217 GiB** (the API field is named `sd_free_gb`).
+Agent logs showed repeated accepted real heartbeats with this value and the
+latest filename. The existing receiver had imported the old bridge class;
+restarted only the Mac Python receiver (old PID 78800, new PID 84574) to load the
+updated telemetry handler, without editing `server/app.py`. No synthetic
+heartbeat POST was used. A GET to `http://192.168.5.84:8788/api/camera/sta`
+returned this camera-origin observation:
+
+```json
+{
+  "internal_daemon_version": "v4-hg224-media",
+  "sd_free_gb": 101.217,
+  "latest_media_file": "DJI_20260813111516_0034_D.MP4",
+  "latest_media_url": "http://192.168.5.93:8088/DJI_001/DJI_20260813111516_0034_D.MP4",
+  "last_heartbeat": "2026-11-18T00:37:24.983917+08:00",
+  "heartbeat_source_ip": "192.168.5.93",
+  "heartbeat_verified": true
+}
+```
+
+The final two fields above are projected from `verification`. The camera's
+clock is incorrect (agent log dates are January 2000); receiver timestamps are
+host observations. "Latest" uses file modification ordering, so the newest
+observed file is the August 2026 file, rather than the `_0036` file dated 2000
+used in earlier HTTP tests.
+
+`list_remote_media("pocket4p")` was tested against the live configuration and
+camera. Since this BusyBox HTTP server has no directory index, listing fell
+back to confirmed USB ADB and `busybox ls -lnt .../DJI_001/*.MP4`. It returned
+17 real MP4 files, newest first. First entry:
+
+```json
+{
+  "name": "DJI_20260813111516_0034_D.MP4",
+  "size_bytes": 3181520,
+  "url": "http://192.168.5.93:8088/DJI_001/DJI_20260813111516_0034_D.MP4"
+}
+```
+
+`pull_latest_media("pocket4p", dest_dir=<temporary directory>, max_bytes=4096)`
+then downloaded and verified exactly 4096 bytes over Wi-Fi from that URL,
+returning `ok: true`, `partial: true`, and an existing local
+`DJI_20260813111516_0034_D.preview-4096.MP4`. Temporary verification files were
+cleaned up. A bounded preview uses a separate filename and stops reading at the
+limit even when the camera ignores Range. Full downloads are checked against
+the listed size and atomically installed in `data/media_cache/` by default.
+
+The agent now posts `/api/camera/webhook` only after a changed newest MP4 has
+positive size and identical size across two checks; it retries unsuccessful
+POSTs and updates `last_mp4.txt` only after an HTTP 2xx response. Its payload
+contains device ID, camera model, STA IP, full file path and Wi-Fi media URL.
+A shell behavior test exercised a growing file (100, 200, 300 bytes), stable
+size, and repeated checks: exactly one notification was emitted after stability.
+This test uses controlled shell inputs, not a new live recording; live creation
+and end-to-end webhook processing remain unverified in this run.
+
+Shutter requests now preserve real ADB enumeration status separately from DUML
+transport dispatch, and leave `recording_state` unknown pending camera evidence.
+An online USB transport alone does not prove the camera is recording.
+
+Validation: `python3 -m unittest tests/test_camera_sta_bridge.py -v` passed all
+9 tests; full discovery passed all 26 tests. Exported script `sh -n` and
+`git diff --check` passed. No git commit was created. Boot persistence remains
+uninstalled and unverified, as documented above.

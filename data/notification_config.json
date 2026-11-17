@@ -1,5 +1,5 @@
 {
-  "mobile_base_url": "http://192.168.5.84:8765",
+  "mobile_base_url": "http://192.168.5.84:8788",
   "enable_macos_banner": true,
   "wecom_webhook_url": "",
   "serverchan_sendkey": "",

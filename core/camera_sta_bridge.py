@@ -15,6 +15,9 @@ import socket
 import struct
 import subprocess
 import time
+import tempfile
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote, unquote
 from typing import Any, Dict, List, Optional, Tuple
 from urllib import request as urllib_request
 from urllib.error import URLError
@@ -186,23 +189,64 @@ ensure_sta() {
     return 0
 }
 
+json_escape() { printf '%s' "$1" | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'; }
+newest_mp4() { "$BB" ls -1t "$DCIM_DIR"/DJI_001/*.MP4 2>/dev/null | "$BB" head -n 1; }
+post_json() {
+    POST_PATH="$1"
+    POST_BODY="$2"
+    RESPONSE=$({ printf 'POST %s HTTP/1.0\r\nHost: %s:%s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$POST_PATH" "$SERVER_IP" "$SERVER_PORT" "${#POST_BODY}" "$POST_BODY"; } | "$BB" nc -w 5 "$SERVER_IP" "$SERVER_PORT")
+    printf '%s\n' "$RESPONSE" | "$BB" head -n 1 | "$BB" grep -q ' 2[0-9][0-9] '
+}
+
 heartbeat() {
     MAC=$(cat /sys/class/net/wlan0/address)
-    # JSON unicode is supplied by the host-generated env; config contains no password.
-    BODY="{\"device_id\":\"$DEVICE_ID\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$WIFI_SSID\",\"wifi_mode\":\"STA\",\"agent_version\":\"v3-hg224\"}"
-    # This firmware's wget has no POST support; nc is available as a BusyBox applet.
-    RESPONSE=$({ printf 'POST /api/camera/heartbeat HTTP/1.0\r\nHost: %s:%s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$SERVER_IP" "$SERVER_PORT" "${#BODY}" "$BODY"; } | "$BB" nc -w 5 "$SERVER_IP" "$SERVER_PORT")
-    case "$RESPONSE" in *'200 OK'*) log "heartbeat accepted ip=$CURRENT_IP mac=$MAC";; *) log "heartbeat failed: $RESPONSE";; esac
+    SD_FREE_GB=$("$BB" df -k /mnt/media_rw/emulated 2>/dev/null | "$BB" awk '/%/ && $(NF-2) ~ /^[0-9]+$/ {printf "%.3f", $(NF-2)/1048576; exit}')
+    SD_FREE_GB="${SD_FREE_GB:-null}"
+    LATEST_MP4=$(newest_mp4)
+    LATEST_MEDIA_FILE="${LATEST_MP4##*/}"
+    LATEST_MEDIA_URL=""
+    [ -n "$LATEST_MEDIA_FILE" ] && LATEST_MEDIA_URL="http://$CURRENT_IP:8088/DJI_001/$LATEST_MEDIA_FILE"
+    BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v4-hg224-media\",\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
+    if post_json /api/camera/heartbeat "$BODY"; then
+        log "heartbeat accepted ip=$CURRENT_IP sd_free_gb=$SD_FREE_GB latest_media_file=$LATEST_MEDIA_FILE"
+    else
+        log "heartbeat failed: $RESPONSE"
+    fi
+}
+
+watch_mp4() {
+    NEW_MP4=$(newest_mp4)
+    [ -n "$NEW_MP4" ] || return
+    NEW_MP4_BASENAME="${NEW_MP4##*/}"
+    LAST_MP4=$(cat "$BASE_DIR/last_mp4.txt" 2>/dev/null)
+    [ "$NEW_MP4_BASENAME" != "$LAST_MP4" ] || return
+    NEW_SIZE=$("$BB" stat -c %s "$NEW_MP4" 2>/dev/null)
+    [ -n "$NEW_SIZE" ] && [ "$NEW_SIZE" -gt 0 ] || return
+    if [ "$PENDING_MP4" = "$NEW_MP4" ] && [ "$PENDING_SIZE" = "$NEW_SIZE" ]; then
+        BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"camera\":\"DJI Osmo Pocket 4 Pro\",\"ip\":\"$CURRENT_IP\",\"file_path\":\"$(json_escape "$NEW_MP4")\",\"media_url\":\"http://$CURRENT_IP:8088/DJI_001/$(json_escape "$NEW_MP4_BASENAME")\"}"
+        if post_json /api/camera/webhook "$BODY"; then
+            printf '%s\n' "$NEW_MP4_BASENAME" > "$BASE_DIR/last_mp4.txt"
+            log "media webhook accepted file=$NEW_MP4_BASENAME size=$NEW_SIZE"
+        else
+            log "media webhook failed file=$NEW_MP4_BASENAME: $RESPONSE"
+        fi
+    fi
+    PENDING_MP4="$NEW_MP4"
+    PENDING_SIZE="$NEW_SIZE"
 }
 
 log 'Starting STA agent; boot auto-start is not installed by this script'
-# Do not restart adbd here: the provisioning command enables TCP once explicitly.
+# Keep USB ADB untouched; this agent never restarts or reconfigures adbd.
+INITIAL_MP4=$(newest_mp4)
+printf '%s\n' "${INITIAL_MP4##*/}" > "$BASE_DIR/last_mp4.txt"
+PENDING_MP4=""
+PENDING_SIZE=""
 # The media server is optional; it only exposes the verified DCIM directory.
 if [ -d "$DCIM_DIR" ]; then
     "$BB" httpd -p 8088 -h "$DCIM_DIR" 2>> "$BASE_DIR/agent.log"
 fi
 while true; do
-    if ensure_sta; then heartbeat; fi
+    if ensure_sta; then heartbeat; watch_mp4; fi
     [ "${RUN_ONCE:-0}" = 1 ] && break
     sleep 5
 done
@@ -230,6 +274,8 @@ class CameraNodeState:
     recording_state: str = "unknown"
     battery_percent: Optional[int] = None
     sd_free_gb: Optional[float] = None
+    latest_media_file: str = ""
+    latest_media_url: str = ""
     last_heartbeat: str = ""
     capabilities: List[str] = field(default_factory=list)
 
@@ -309,6 +355,9 @@ class CameraInternalBridge:
                       ssid=str(payload.get("ssid", "")), wifi_mode="STA" if verified else "unverified",
                       last_heartbeat=now, internal_daemon_installed=True,
                       internal_daemon_version=str(payload.get("agent_version", "")))
+        for key in ("sd_free_gb", "latest_media_file", "latest_media_url"):
+            if key in payload:
+                camera[key] = payload[key]
         camera.setdefault("verification", {}).update(
             checked_at=now, status="live_sta_heartbeat" if verified else "heartbeat_source_mismatch",
             heartbeat_verified=verified, sta_connection_verified=verified,
@@ -635,6 +684,101 @@ class CameraInternalBridge:
                 "output": proc.stdout.strip(), "stderr": proc.stderr.strip(),
                 "live_socket_connected": proc.returncode == 0}
 
+    def list_remote_media(self, device_id: str = "pocket4p") -> Dict[str, Any]:
+        """List actual camera MP4s, newest first; directory-less httpd uses ADB."""
+        camera = self.load_state().get("cameras", {}).get(device_id)
+        if not camera or not camera.get("lan_ip"):
+            return {"ok": False, "error": "Camera has no configured LAN address", "files": []}
+        base_url = f"http://{camera['lan_ip']}:{camera.get('http_media_port', 8088)}/DJI_001/"
+        files = []
+        http_error = ""
+        try:
+            with urllib_request.urlopen(base_url, timeout=5) as response:
+                page = response.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
+            names = {unquote(name) for name in re.findall(r'href=[\"\']([^\"\']+)[\"\']', page, re.I)}
+            for name in names:
+                if not re.fullmatch(r"[A-Za-z0-9_. -]+\.MP4", name, re.I):
+                    continue
+                url = base_url + quote(name)
+                with urllib_request.urlopen(urllib_request.Request(url, method="HEAD"), timeout=5) as response:
+                    size = int(response.headers["Content-Length"])
+                    modified = response.headers.get("Last-Modified", "")
+                timestamp = parsedate_to_datetime(modified).timestamp() if modified else 0
+                files.append({"name": name, "file_path": "/mnt/media_rw/emulated/DCIM/DJI_001/" + name,
+                              "url": url, "media_url": url, "size_bytes": size, "modified": timestamp})
+            if not files:
+                raise ValueError("HTTP directory contains no MP4 listing")
+            files.sort(key=lambda item: (item["modified"], item["name"]), reverse=True)
+            source = "http"
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            http_error = str(error)
+            files = []
+            result = self.execute_internal_command(device_id,
+                "/sbin/busybox ls -lnt /mnt/media_rw/emulated/DCIM/DJI_001/*.MP4")
+            if not result.get("ok"):
+                return {"ok": False, "error": result.get("error", "ADB listing failed"),
+                        "http_error": http_error, "files": []}
+            for line in result.get("output", "").splitlines():
+                fields = line.split(None, 8)
+                if len(fields) != 9 or not fields[0].startswith("-"):
+                    continue
+                name = os.path.basename(fields[8])
+                if not re.fullmatch(r"[A-Za-z0-9_. -]+\.MP4", name, re.I):
+                    continue
+                try:
+                    size = int(fields[4])
+                except ValueError:
+                    continue
+                url = base_url + quote(name)
+                files.append({"name": name, "file_path": "/mnt/media_rw/emulated/DCIM/DJI_001/" + name,
+                              "url": url, "media_url": url, "size_bytes": size})
+            source = "adb"
+        return {"ok": True, "device_id": device_id, "source": source, "files": files,
+                "count": len(files), "latest": files[0] if files else None}
+
+    def pull_latest_media(self, device_id: str = "pocket4p", dest_dir: Optional[str] = None,
+                          max_bytes: Optional[int] = None) -> Dict[str, Any]:
+        """Download to an atomic local cache; bounded previews never replace full files."""
+        if max_bytes is not None and (isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0):
+            return {"ok": False, "error": "max_bytes must be a positive integer"}
+        listing = self.list_remote_media(device_id)
+        if not listing.get("ok") or not listing.get("files"):
+            return {"ok": False, "error": listing.get("error", "No MP4 files found")}
+        media = listing["files"][0]
+        partial = max_bytes is not None and max_bytes < media["size_bytes"]
+        name = os.path.basename(media["name"])
+        if partial:
+            name = os.path.splitext(name)[0] + f".preview-{max_bytes}.MP4"
+        destination = dest_dir or os.path.join(self.data_dir, "media_cache")
+        temporary = None
+        try:
+            os.makedirs(destination, exist_ok=True)
+            local_path = os.path.abspath(os.path.join(destination, name))
+            headers = {"Range": f"bytes=0-{max_bytes - 1}"} if max_bytes else {}
+            req = urllib_request.Request(media["url"], headers=headers)
+            received = 0
+            with urllib_request.urlopen(req, timeout=30) as response:
+                with tempfile.NamedTemporaryFile(dir=destination, delete=False) as output:
+                    temporary = output.name
+                    while max_bytes is None or received < max_bytes:
+                        chunk = response.read(min(1024 * 1024, max_bytes - received) if max_bytes else 1024 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        received += len(chunk)
+            expected = min(max_bytes, media["size_bytes"]) if max_bytes else media["size_bytes"]
+            if not received or received != expected:
+                raise ValueError(f"Incomplete download: expected {expected} bytes, received {received}")
+            os.replace(temporary, local_path)
+            temporary = None
+            return {"ok": os.path.isfile(local_path), "device_id": device_id, "local_path": local_path,
+                    "size_bytes": received, "partial": partial, "media_url": media["url"]}
+        except (OSError, ValueError) as error:
+            return {"ok": False, "error": str(error)}
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
+
     def trigger_lan_recording(self, device_id: str, action: str = "start") -> Dict[str, Any]:
         """
         Sends DUML v1 UDP Shutter Start/Stop packet over the LAN to the camera
@@ -673,13 +817,18 @@ class CameraInternalBridge:
         finally:
             sock.close()
 
-        cam["recording_state"] = "recording" if is_start else "idle"
+        adb = self.adb_transport(device_id)
+        adb_status = {key: value for key, value in adb.items() if key != "argv"}
+        cam["adb_status"] = adb_status
+        # Transport availability and dispatched frames do not confirm recording.
+        cam["recording_state"] = "unknown"
+        cam["recording_requested_action"] = "start" if is_start else "stop"
 
         log_entry = {
             "time": datetime.now().strftime("%H:%M:%S"),
             "target": f"{device_id} ({ip}:9004 / USB_EP04={usb_sent})",
             "cmd": f"DUML [02:02] Shutter {'START (0x01)' if is_start else 'STOP (0x00)'}",
-            "output": f"Sent {len(pkt)}B DUML frame ({pkt.hex(' ').upper()}) -> state={cam['recording_state']}",
+            "output": f"Sent {len(pkt)}B DUML frame ({pkt.hex(' ').upper()}) -> recording unverified; ADB={adb_status}",
         }
         state.setdefault("command_log", []).insert(0, log_entry)
         state["command_log"] = state["command_log"][:25]
@@ -689,6 +838,8 @@ class CameraInternalBridge:
             "ok": True,
             "device_id": device_id,
             "recording_state": cam["recording_state"],
+            "adb_status": adb_status,
+            "usb_dispatched": usb_sent,
             "duml_hex": pkt.hex(" ").upper(),
             "log_entry": log_entry,
         }

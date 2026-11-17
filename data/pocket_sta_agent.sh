@@ -49,23 +49,64 @@ ensure_sta() {
     return 0
 }
 
+json_escape() { printf '%s' "$1" | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'; }
+newest_mp4() { "$BB" ls -1t "$DCIM_DIR"/DJI_001/*.MP4 2>/dev/null | "$BB" head -n 1; }
+post_json() {
+    POST_PATH="$1"
+    POST_BODY="$2"
+    RESPONSE=$({ printf 'POST %s HTTP/1.0\r\nHost: %s:%s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$POST_PATH" "$SERVER_IP" "$SERVER_PORT" "${#POST_BODY}" "$POST_BODY"; } | "$BB" nc -w 5 "$SERVER_IP" "$SERVER_PORT")
+    printf '%s\n' "$RESPONSE" | "$BB" head -n 1 | "$BB" grep -q ' 2[0-9][0-9] '
+}
+
 heartbeat() {
     MAC=$(cat /sys/class/net/wlan0/address)
-    # JSON unicode is supplied by the host-generated env; config contains no password.
-    BODY="{\"device_id\":\"$DEVICE_ID\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$WIFI_SSID\",\"wifi_mode\":\"STA\",\"agent_version\":\"v3-hg224\"}"
-    # This firmware's wget has no POST support; nc is available as a BusyBox applet.
-    RESPONSE=$({ printf 'POST /api/camera/heartbeat HTTP/1.0\r\nHost: %s:%s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$SERVER_IP" "$SERVER_PORT" "${#BODY}" "$BODY"; } | "$BB" nc -w 5 "$SERVER_IP" "$SERVER_PORT")
-    case "$RESPONSE" in *'200 OK'*) log "heartbeat accepted ip=$CURRENT_IP mac=$MAC";; *) log "heartbeat failed: $RESPONSE";; esac
+    SD_FREE_GB=$("$BB" df -k /mnt/media_rw/emulated 2>/dev/null | "$BB" awk '/%/ && $(NF-2) ~ /^[0-9]+$/ {printf "%.3f", $(NF-2)/1048576; exit}')
+    SD_FREE_GB="${SD_FREE_GB:-null}"
+    LATEST_MP4=$(newest_mp4)
+    LATEST_MEDIA_FILE="${LATEST_MP4##*/}"
+    LATEST_MEDIA_URL=""
+    [ -n "$LATEST_MEDIA_FILE" ] && LATEST_MEDIA_URL="http://$CURRENT_IP:8088/DJI_001/$LATEST_MEDIA_FILE"
+    BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v4-hg224-media\",\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
+    if post_json /api/camera/heartbeat "$BODY"; then
+        log "heartbeat accepted ip=$CURRENT_IP sd_free_gb=$SD_FREE_GB latest_media_file=$LATEST_MEDIA_FILE"
+    else
+        log "heartbeat failed: $RESPONSE"
+    fi
+}
+
+watch_mp4() {
+    NEW_MP4=$(newest_mp4)
+    [ -n "$NEW_MP4" ] || return
+    NEW_MP4_BASENAME="${NEW_MP4##*/}"
+    LAST_MP4=$(cat "$BASE_DIR/last_mp4.txt" 2>/dev/null)
+    [ "$NEW_MP4_BASENAME" != "$LAST_MP4" ] || return
+    NEW_SIZE=$("$BB" stat -c %s "$NEW_MP4" 2>/dev/null)
+    [ -n "$NEW_SIZE" ] && [ "$NEW_SIZE" -gt 0 ] || return
+    if [ "$PENDING_MP4" = "$NEW_MP4" ] && [ "$PENDING_SIZE" = "$NEW_SIZE" ]; then
+        BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"camera\":\"DJI Osmo Pocket 4 Pro\",\"ip\":\"$CURRENT_IP\",\"file_path\":\"$(json_escape "$NEW_MP4")\",\"media_url\":\"http://$CURRENT_IP:8088/DJI_001/$(json_escape "$NEW_MP4_BASENAME")\"}"
+        if post_json /api/camera/webhook "$BODY"; then
+            printf '%s\n' "$NEW_MP4_BASENAME" > "$BASE_DIR/last_mp4.txt"
+            log "media webhook accepted file=$NEW_MP4_BASENAME size=$NEW_SIZE"
+        else
+            log "media webhook failed file=$NEW_MP4_BASENAME: $RESPONSE"
+        fi
+    fi
+    PENDING_MP4="$NEW_MP4"
+    PENDING_SIZE="$NEW_SIZE"
 }
 
 log 'Starting STA agent; boot auto-start is not installed by this script'
-# Do not restart adbd here: the provisioning command enables TCP once explicitly.
+# Keep USB ADB untouched; this agent never restarts or reconfigures adbd.
+INITIAL_MP4=$(newest_mp4)
+printf '%s\n' "${INITIAL_MP4##*/}" > "$BASE_DIR/last_mp4.txt"
+PENDING_MP4=""
+PENDING_SIZE=""
 # The media server is optional; it only exposes the verified DCIM directory.
 if [ -d "$DCIM_DIR" ]; then
     "$BB" httpd -p 8088 -h "$DCIM_DIR" 2>> "$BASE_DIR/agent.log"
 fi
 while true; do
-    if ensure_sta; then heartbeat; fi
+    if ensure_sta; then heartbeat; watch_mp4; fi
     [ "${RUN_ONCE:-0}" = 1 ] && break
     sleep 5
 done

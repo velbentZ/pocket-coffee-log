@@ -35,7 +35,7 @@ class NotificationManager:
         os.makedirs(self.data_dir, exist_ok=True)
         if not os.path.exists(self.config_path):
             default_cfg = {
-                "mobile_base_url": "http://192.168.5.84:8765",
+                "mobile_base_url": "http://192.168.5.84:8788",
                 "enable_macos_banner": True,
                 "wecom_webhook_url": os.environ.get("WECOM_WEBHOOK_URL", ""),
                 "serverchan_sendkey": os.environ.get("SERVERCHAN_SENDKEY", ""),
@@ -65,7 +65,7 @@ class NotificationManager:
 
     def notify_brew_record(self, rec: CoffeeRecord) -> Dict[str, Any]:
         cfg = self.load_config()
-        base_url = cfg.get("mobile_base_url", "http://192.168.5.84:8765").rstrip("/")
+        base_url = cfg.get("mobile_base_url", "http://192.168.5.84:8788").rstrip("/")
         report_url = f"{base_url}/?record_id={rec.id}"
 
         if rec.status == "needs_info" and rec.missing_fields:
