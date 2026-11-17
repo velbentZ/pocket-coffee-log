@@ -572,11 +572,11 @@ class CameraInternalBridge:
 
         cam = state["cameras"].get(device_id, {})
         if cam:
-            cam["wifi_mode"] = "STA"
+            cam["wifi_mode"] = "unverified"
             cam["ssid"] = ssid
             cam["lan_ip"] = lan_ip
             cam["rtsp_url"] = f"rtsp://{lan_ip}:554/live/0"
-            cam["internal_daemon_installed"] = True
+            cam["internal_daemon_installed"] = False
             cam["last_heartbeat"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             state["cameras"][device_id] = cam
 
@@ -584,14 +584,15 @@ class CameraInternalBridge:
             "time": datetime.now().strftime("%H:%M:%S"),
             "target": f"{device_id} ({lan_ip})",
             "cmd": f"DUML [07:47] STA Join '{ssid}' (USB_EP04={usb_sent}) + Deploy /data/local/tmp/pocket_sta_agent.sh",
-            "output": f"Packet ({len(duml_pkt)}B): {duml_hex[:47]}... | STA Locked @ {lan_ip}",
+            "output": f"Packet ({len(duml_pkt)}B): {duml_hex[:47]}... | STA requested; connection and deployment unverified",
         }
         state.setdefault("command_log", []).insert(0, log_entry)
         state["command_log"] = state["command_log"][:20]
         self.save_state(state)
 
         return {
-            "ok": True,
+            "ok": False,
+            "error": "STA command delivery does not verify association or agent deployment",
             "device_id": device_id,
             "lan_ip": lan_ip,
             "ssid": ssid,
@@ -632,7 +633,7 @@ class CameraInternalBridge:
         )
         return {
             "usb_connected": True,
-            "auto_provisioned": True,
+            "auto_provisioned": res["ok"],
             "camera_usb_info": usb_info,
             "provision_result": res,
         }
@@ -664,10 +665,12 @@ class CameraInternalBridge:
                 )
                 output = (proc.stdout or proc.stderr).strip()
             except Exception as e:
-                output = f"[ADB TCP {ip}:5555] {e}"
+                return {"ok": False, "device_id": device_id, "error": str(e), "live_socket_connected": True}
         else:
             # Emulate authentic DJI Osmo Pocket Ambarella/Android Linux internal shell response
-            output = self._emulate_camera_shell(cam, cmd_clean, state["sta_network"]["ssid"])
+            return {"ok": False, "device_id": device_id, "ip": ip,
+                    "error": "No live ADB transport; command was not executed",
+                    "live_socket_connected": False}
 
         log_entry = {
             "time": datetime.now().strftime("%H:%M:%S"),
@@ -681,7 +684,8 @@ class CameraInternalBridge:
         self.save_state(state)
 
         return {
-            "ok": True,
+            "ok": proc.returncode == 0,
+            "exit_code": proc.returncode,
             "device_id": device_id,
             "ip": ip,
             "cmd": cmd_clean,

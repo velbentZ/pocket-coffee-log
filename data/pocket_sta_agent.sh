@@ -12,9 +12,9 @@
 #    download URL directly to the Mac Coffee Server.
 # =============================================================================
 
-WIFI_SSID="${WIFI_SSID:-YOUR_HOME_WIFI}"
-WIFI_PSK="${WIFI_PSK:-YOUR_WIFI_PASSWORD}"
-COFFEE_SERVER_URL="${COFFEE_SERVER_URL:-http://192.168.5.84:8765}"
+WIFI_SSID="${WIFI_SSID:-你的名字}"
+WIFI_PSK="${WIFI_PSK:-nidemingzi}"
+COFFEE_SERVER_URL="${COFFEE_SERVER_URL:-http://192.168.5.84:8788}"
 CAMERA_MODEL="$(getprop ro.product.model 2>/dev/null || echo 'DJI-Osmo-Pocket')"
 WPA_CONF="/data/local/tmp/wpa_sta_persistent.conf"
 PID_FILE="/data/local/tmp/pocket_sta_agent.pid"

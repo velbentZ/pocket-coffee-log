@@ -25,7 +25,7 @@
       "recording_state": "idle",
       "battery_percent": 96,
       "sd_free_gb": 218.6,
-      "last_heartbeat": "2026-11-17 21:30:02",
+      "last_heartbeat": "2026-11-17 21:35:29",
       "capabilities": [
         "Persistent STA Mode (wpa_supplicant keepalive)",
         "ADB over TCP (:5555) Root Shell",
@@ -63,6 +63,12 @@
     }
   },
   "command_log": [
+    {
+      "time": "21:35:29",
+      "target": "pocket4p (192.168.5.108)",
+      "cmd": "DUML [07:47] STA Join '你的名字' (USB_EP04=True) + Deploy /data/local/tmp/pocket_sta_agent.sh",
+      "output": "Packet (41B): 55 29 04 C9 02 07 01 00 40 07 47 0C 0A E4 BD A0... | STA Locked @ 192.168.5.108"
+    },
     {
       "time": "21:30:02",
       "target": "pocket3 (192.168.5.109)",

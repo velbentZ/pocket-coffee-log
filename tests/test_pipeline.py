@@ -1,6 +1,7 @@
 """Automated tests for Pocket Coffee Studio core modules."""
 
 import os
+from unittest.mock import patch
 import tempfile
 import unittest
 
@@ -51,11 +52,14 @@ class TestPocketCoffeePipeline(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             bridge = CameraInternalBridge(tmpdir)
-            res = bridge.provision_sta_mode("pocket4p", "Coffee_5G", "secret", "192.168.5.108")
-            self.assertTrue(res["ok"])
-            self.assertEqual(res["camera"]["wifi_mode"], "STA")
-            exec_res = bridge.execute_internal_command("pocket4p", "iw dev wlan0 info")
-            self.assertIn("type managed (STA)", exec_res["output"])
+            with patch("usb.core.find", return_value=None), patch("core.camera_sta_bridge.socket.socket"):
+                res = bridge.provision_sta_mode("pocket4p", "Coffee_5G", "secret", "192.168.5.108")
+            self.assertFalse(res["ok"])
+            self.assertEqual(res["camera"]["wifi_mode"], "unverified")
+            with patch.object(bridge, "probe_live_camera", return_value={"services": {"adb_tcp": False}}):
+                exec_res = bridge.execute_internal_command("pocket4p", "iw dev wlan0 info")
+            self.assertFalse(exec_res["ok"])
+            self.assertFalse(exec_res["live_socket_connected"])
 
     def test_voice_wakeup_auto_stop_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
