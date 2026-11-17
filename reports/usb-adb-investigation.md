@@ -273,3 +273,40 @@ Evidence: `dynamic-sta-verification.py`, `dynamic-sta-verification.jsonl`,
 `dynamic-sta-arp.txt`, `dynamic-sta-rndis.py`, `dynamic-sta-rndis.json`.
 No production STA command change was made because association was not verified.
 `make test`: all 13 tests passed.
+
+## Bounded getter and destination-IP verification (2026-11-17)
+
+Queried (7,0), command set 07, without resending credentials. Sequences
+52001–52012 in `bounded-sta-getters.jsonl` correspond to baseline empty
+4a/4b/4d, then 4a inputs 00/01/ff, 4b inputs 00/01/ff, then empty
+4a/4b/4d again. Baseline and final empty replies were identical:
+4a `0000054661696c00`, 4b `00ff00054661696c00`, 4d `0000000000`.
+For 4a, both one-byte 00 and 01 returned `00`; ff returned the full
+baseline reply. For 4b, both 00 and 01 returned `0000`; ff returned the
+full baseline reply. This supports an indexed-getter interpretation of the
+previous 26-byte requests: their first byte 01 alone reproduces the replies.
+There is no observed status/IP change or association. These observations do
+not prove trailing-byte parsing rules or exclude hidden setter side effects;
+the original experiment did not capture immediate post-request status.
+
+RNDIS Interfaces 0/1 initialization and filter setup succeeded. ARP for
+192.168.2.1 returned MAC `ea:9c:36:fe:5b:fd`. Sent one TCP SYN per port
+21, 22, 23, 80, 443, 554, 5037, 5555, 7878, 8080, 8088, 9004, 22345,
+using that destination MAC, destination IP 192.168.2.1, source IP
+192.168.2.2 and source port 40000. Each had a 300 ms receive window:
+no packets were received (neither SYN-ACK nor RST). No open service was
+established; silence cannot distinguish filtering, routing, or closed ports.
+
+Sent all 254 ARP requests for 192.168.5.1–192.168.5.254 using source
+192.168.2.2, with 20 ms receive windows and a final two-second drain.
+No replies were received. A subsequent ARP control for 192.168.2.1 again
+returned the same MAC, establishing that USB ARP remained operational.
+Under the stated weak-host ARP behavior this supports absence of an
+ARP-visible 192.168.5.x address; it is not direct kernel address enumeration
+and cannot exclude different ARP policy, packet loss, or transient state.
+
+Reproducible scripts and raw evidence: `bounded-sta-getters.py`,
+`bounded-sta-getters.jsonl`, `bounded-sta-rndis.py`, `bounded-sta-rndis.json`.
+The saved RNDIS run uses the valid control source 192.168.2.2; an earlier
+exploratory sweep using network address 192.168.5.0 was superseded.
+No production changes. `make test`: all 13 tests passed.
