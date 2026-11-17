@@ -118,7 +118,9 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/camera/usb_probe":
-            self._send_json({"ok": True, **camera_bridge.scan_usb_and_serial_devices()})
+            usb_scan = camera_bridge.scan_usb_and_serial_devices()
+            auto_prov = camera_bridge.auto_provision_if_usb_connected()
+            self._send_json({"ok": True, **usb_scan, "auto_provision": auto_prov})
             return
 
         if path == "/api/context/snapshot":

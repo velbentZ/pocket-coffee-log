@@ -1,7 +1,7 @@
 {
   "sta_network": {
-    "ssid": "Home_Coffee_LAN",
-    "password": "********",
+    "ssid": "你的名字",
+    "password": "nidemingzi",
     "subnet": "192.168.5.0/24",
     "mac_server_ip": "192.168.5.84",
     "mac_server_port": 8765,
@@ -14,7 +14,7 @@
       "model": "DJI Osmo Pocket 4 Pro",
       "wifi_mode": "STA",
       "lan_ip": "192.168.5.108",
-      "ssid": "Home_Coffee_LAN",
+      "ssid": "你的名字",
       "mac_address": "60:60:1F:4P:99:A1",
       "adb_port": 5555,
       "http_media_port": 8088,
@@ -25,7 +25,7 @@
       "recording_state": "idle",
       "battery_percent": 96,
       "sd_free_gb": 218.6,
-      "last_heartbeat": "2026-11-15 10:31:41",
+      "last_heartbeat": "2026-11-17 21:30:02",
       "capabilities": [
         "Persistent STA Mode (wpa_supplicant keepalive)",
         "ADB over TCP (:5555) Root Shell",
@@ -40,7 +40,7 @@
       "model": "DJI Osmo Pocket 3",
       "wifi_mode": "STA",
       "lan_ip": "192.168.5.109",
-      "ssid": "Home_Coffee_LAN",
+      "ssid": "你的名字",
       "mac_address": "60:60:1F:3P:44:B2",
       "adb_port": 5555,
       "http_media_port": 8088,
@@ -51,7 +51,7 @@
       "recording_state": "idle",
       "battery_percent": 88,
       "sd_free_gb": 114.2,
-      "last_heartbeat": "2026-11-15 10:31:41",
+      "last_heartbeat": "2026-11-17 21:30:02",
       "capabilities": [
         "Persistent STA Mode (wpa_supplicant keepalive)",
         "ADB over TCP (:5555) Root Shell",
@@ -63,6 +63,18 @@
     }
   },
   "command_log": [
+    {
+      "time": "21:30:02",
+      "target": "pocket3 (192.168.5.109)",
+      "cmd": "DUML [07:47] STA Join '你的名字' (USB_EP04=False) + Deploy /data/local/tmp/pocket_sta_agent.sh",
+      "output": "Packet (41B): 55 29 04 C9 02 07 01 00 40 07 47 0C 0A E4 BD A0... | STA Locked @ 192.168.5.109"
+    },
+    {
+      "time": "21:30:02",
+      "target": "pocket4p (192.168.5.108)",
+      "cmd": "DUML [07:47] STA Join '你的名字' (USB_EP04=False) + Deploy /data/local/tmp/pocket_sta_agent.sh",
+      "output": "Packet (41B): 55 29 04 C9 02 07 01 00 40 07 47 0C 0A E4 BD A0... | STA Locked @ 192.168.5.108"
+    },
     {
       "time": "10:31:41",
       "target": "pocket4p (192.168.5.108)",

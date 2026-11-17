@@ -162,9 +162,9 @@ ON_CAMERA_AGENT_SCRIPT = r"""#!/system/bin/sh
 #    download URL directly to the Mac Coffee Server.
 # =============================================================================
 
-WIFI_SSID="${WIFI_SSID:-YOUR_HOME_WIFI}"
-WIFI_PSK="${WIFI_PSK:-YOUR_WIFI_PASSWORD}"
-COFFEE_SERVER_URL="${COFFEE_SERVER_URL:-http://192.168.5.84:8765}"
+WIFI_SSID="${WIFI_SSID:-你的名字}"
+WIFI_PSK="${WIFI_PSK:-nidemingzi}"
+COFFEE_SERVER_URL="${COFFEE_SERVER_URL:-http://192.168.5.84:8788}"
 CAMERA_MODEL="$(getprop ro.product.model 2>/dev/null || echo 'DJI-Osmo-Pocket')"
 WPA_CONF="/data/local/tmp/wpa_sta_persistent.conf"
 PID_FILE="/data/local/tmp/pocket_sta_agent.pid"
@@ -600,6 +600,41 @@ class CameraInternalBridge:
             "udp_dispatched_to": udp_sent_to,
             "camera": cam,
             "log_entry": log_entry,
+        }
+
+    def auto_provision_if_usb_connected(self) -> Dict[str, Any]:
+        """
+        Checks if Pocket 3 or Pocket 4 Pro is connected via USB-C and automatically
+        dispatches the stored STA Wi-Fi credentials (`你的名字` / `nidemingzi`) over
+        USB Interface #4 (`EP 0x04`).
+        """
+        state = self.load_state()
+        net = state.get("sta_network", {})
+        ssid = net.get("ssid", "你的名字")
+        pwd = net.get("password", "nidemingzi")
+        if pwd == "********":
+            pwd = "nidemingzi"
+
+        usb_info = self.query_live_usb_camera_info()
+        if not usb_info.get("connected"):
+            return {"usb_connected": False, "auto_provisioned": False}
+
+        prod_name = usb_info.get("product_name", "")
+        dev_id = "pocket3" if "Pocket3" in prod_name else "pocket4p"
+        cam_cfg = state.get("cameras", {}).get(dev_id, {})
+        target_ip = cam_cfg.get("lan_ip", "192.168.5.108")
+        res = self.provision_sta_mode(
+            device_id=dev_id,
+            ssid=ssid,
+            password=pwd,
+            lan_ip=target_ip,
+            mac_server_ip=net.get("mac_server_ip", "192.168.5.84"),
+        )
+        return {
+            "usb_connected": True,
+            "auto_provisioned": True,
+            "camera_usb_info": usb_info,
+            "provision_result": res,
         }
 
     def execute_internal_command(self, device_id: str, shell_cmd: str) -> Dict[str, Any]:
