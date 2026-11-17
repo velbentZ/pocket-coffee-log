@@ -12,10 +12,10 @@
     "pocket4p": {
       "device_id": "pocket4p",
       "model": "DJI Osmo Pocket 4 Pro",
-      "wifi_mode": "unknown",
-      "lan_ip": "",
+      "wifi_mode": "STA",
+      "lan_ip": "192.168.5.93",
       "ssid": "你的名字",
-      "mac_address": "9c:5a:8a:97:4f:b5",
+      "mac_address": "88:22:33:77:33:99",
       "adb_port": 5555,
       "http_media_port": 8088,
       "duml_udp_port": 9004,
@@ -29,52 +29,57 @@
       "capabilities": [],
       "adb_serial": "123456789ABCDEF",
       "verification": {
-        "checked_at": "2026-11-17T23:52:51.537913+08:00",
-        "status": "blocked_adb_offline",
+        "checked_at": "2026-11-18T00:11:49.196567+08:00",
+        "status": "sta_ping_verified_device_disconnected_before_heartbeat",
         "usb_product": "OsmoPocket4P-ANHXP5J0022DTW",
         "adb_serial": "123456789ABCDEF",
-        "adb_state": "offline",
-        "sta_connection_verified": false,
+        "adb_state": "device_then_disconnected",
+        "sta_connection_verified": true,
         "agent_installation_verified": false,
         "persistence_verified": false,
         "heartbeat_verified": false,
-        "verified_sta_ip": null,
-        "mac_address_source": "Prior live DUML 07:0c; reports/dynamic-sta-verification.jsonl",
+        "verified_sta_ip": "192.168.5.93",
+        "mac_address_source": "Live /sys/class/net/wlan0 and wpa_cli status; differs from prior DUML getter",
         "evidence": [
-          "reports/adb-enabled-live-probe.json",
-          "reports/adb-enabled-live-status.json"
+          "reports/usb-adb-investigation.md"
         ],
-        "note": "No live shell. Previous IP, installation, heartbeat and capabilities were unverified; no STA configuration or agent deployment performed in this attempt."
+        "note": "Root shell, WPA2 station association, DHCP lease and bidirectional 3-packet ping verified in this session. Agent files pushed but heartbeat not yet received; device then disappeared from USB and LAN. Boot persistence not configured or tested."
       }
     },
     "pocket3": {
       "device_id": "pocket3",
       "model": "DJI Osmo Pocket 3",
-      "wifi_mode": "STA",
-      "lan_ip": "192.168.5.109",
+      "wifi_mode": "unknown",
+      "lan_ip": "",
       "ssid": "你的名字",
-      "mac_address": "60:60:1F:3P:44:B2",
+      "mac_address": "",
       "adb_port": 5555,
       "http_media_port": 8088,
       "duml_udp_port": 9004,
-      "rtsp_url": "rtsp://192.168.5.109:554/live/0",
-      "internal_daemon_installed": true,
-      "internal_daemon_version": "v2.4.0-sta-ext",
-      "recording_state": "idle",
-      "battery_percent": 88,
-      "sd_free_gb": 114.2,
-      "last_heartbeat": "2026-11-17 21:30:02",
-      "capabilities": [
-        "Persistent STA Mode (wpa_supplicant keepalive)",
-        "ADB over TCP (:5555) Root Shell",
-        "DUML v1 UDP Remote Shutter (:9004)",
-        "BusyBox HTTP Direct DCIM Pull (:8088)",
-        "RTSP 1080p60 Live Stream + PCM Audio (:554)",
-        "Auto Webhook Push on Recording Stop"
-      ]
+      "rtsp_url": "",
+      "internal_daemon_installed": false,
+      "internal_daemon_version": "",
+      "recording_state": "unknown",
+      "battery_percent": null,
+      "sd_free_gb": null,
+      "last_heartbeat": "",
+      "capabilities": [],
+      "verification": {
+        "status": "not_tested",
+        "sta_connection_verified": false,
+        "heartbeat_verified": false,
+        "persistence_verified": false
+      }
     }
   },
   "command_log": [
+    {
+      "time": "2026-11-18T00:11:49.196579+08:00",
+      "target": "pocket4p",
+      "cmd": "ADB root -> PCIe load -> wpa_supplicant nl80211 -> BusyBox udhcpc",
+      "output": "DHCP 192.168.5.93/24; WPA2-PSK station; three pings each direction succeeded; heartbeat pending",
+      "verification_status": "live_observed"
+    },
     {
       "time": "21:35:29",
       "target": "pocket4p (192.168.5.108)",
@@ -86,7 +91,8 @@
       "time": "21:30:02",
       "target": "pocket3 (192.168.5.109)",
       "cmd": "DUML [07:47] STA Join '你的名字' (USB_EP04=False) + Deploy /data/local/tmp/pocket_sta_agent.sh",
-      "output": "Packet (41B): 55 29 04 C9 02 07 01 00 40 07 47 0C 0A E4 BD A0... | STA Locked @ 192.168.5.109"
+      "output": "Packet (41B): 55 29 04 C9 02 07 01 00 40 07 47 0C 0A E4 BD A0... | STA Locked @ 192.168.5.109",
+      "verification_status": "legacy_unverified"
     },
     {
       "time": "21:30:02",
@@ -113,7 +119,8 @@
       "time": "10:31:41",
       "target": "pocket3 (192.168.5.109:5555)",
       "cmd": "adb push pocket_sta_agent.sh /data/local/tmp/ && nohup sh /data/local/tmp/pocket_sta_agent.sh &",
-      "output": "PID 3819 running | httpd :8088 active | power_save=off | DCIM watcher ready"
+      "output": "PID 3819 running | httpd :8088 active | power_save=off | DCIM watcher ready",
+      "verification_status": "legacy_unverified"
     }
   ]
 }

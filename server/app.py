@@ -97,6 +97,10 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path == "/api/camera/sta":
+            self._send_json(camera_bridge.sta_status())
+            return
+
         if path == "/api/state":
             records = [r.to_dict() for r in store.list_records()]
             cam_state = camera_bridge.load_state()
@@ -145,6 +149,11 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         body = self._read_json_body()
+
+        if path == "/api/camera/heartbeat":
+            result = camera_bridge.record_heartbeat(body, self.client_address[0])
+            self._send_json(result, status=200 if result["ok"] else 400)
+            return
 
         if path == "/api/voice/wake":
             cam_id = body.get("camera_id", "pocket4p")

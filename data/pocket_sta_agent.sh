@@ -1,115 +1,71 @@
 #!/system/bin/sh
-# =============================================================================
-# Pocket 3 / Pocket 4 Pro Internal Persistent STA & Coffee Hook Daemon
-# Path on camera: /data/local/tmp/pocket_sta_agent.sh
-# =============================================================================
-# Features:
-# 1. Forces wlan0 into persistent STA (Client) mode connected to Home LAN
-#    using wpa_supplicant & udhcpc, surviving screen sleep.
-# 2. Enables ADB over TCP (port 5555) and Telnet/FTP for LAN control.
-# 3. Watches /storage/sdcard0/DCIM/DJI_001 (or /mnt/sdcard/DCIM/100MEDIA)
-#    for newly completed MP4 files and pushes a webhook notification with the
-#    download URL directly to the Mac Coffee Server.
-# =============================================================================
-
-WIFI_SSID="${WIFI_SSID:-你的名字}"
-WIFI_PSK="${WIFI_PSK:-nidemingzi}"
-COFFEE_SERVER_URL="${COFFEE_SERVER_URL:-http://192.168.5.84:8788}"
-CAMERA_MODEL="$(getprop ro.product.model 2>/dev/null || echo 'DJI-Osmo-Pocket')"
-WPA_CONF="/data/local/tmp/wpa_sta_persistent.conf"
-PID_FILE="/data/local/tmp/pocket_sta_agent.pid"
-LOG_FILE="/data/local/tmp/pocket_sta_agent.log"
-
+# Verified on eagle4_hg224. Install in /data/pocket-coffee; firmware is read-only.
+BASE_DIR="${BASE_DIR:-/data/pocket-coffee}"
+[ -r "$BASE_DIR/agent.env" ] && . "$BASE_DIR/agent.env"
+DEVICE_ID="${DEVICE_ID:-pocket4p}"
+SERVER_IP="${SERVER_IP:-192.168.5.84}"
+SERVER_PORT="${SERVER_PORT:-8788}"
+WPA_CONF="${WPA_CONF:-/data/misc/wifi/pocket_sta.conf}"
+CTRL_DIR="${CTRL_DIR:-/data/misc/wifi/sockets}"
+DCIM_DIR="${DCIM_DIR:-/mnt/media_rw/emulated/DCIM}"
+BB=/sbin/busybox
+mkdir -p "$BASE_DIR"
+PID_FILE="$BASE_DIR/agent.pid"
+if [ -r "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then exit 0; fi
 echo $$ > "$PID_FILE"
-log_msg() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-}
+trap 'rm -f "$PID_FILE"; exit' INT TERM EXIT
+log() { echo "$(date) $*" >> "$BASE_DIR/agent.log"; }
 
-log_msg "Starting Pocket Internal STA Agent on $CAMERA_MODEL..."
-
-# 1. Enable ADB over TCP/IP (Port 5555) so Mac can always reach camera shell over LAN
-setprop service.adb.tcp.port 5555 2>/dev/null
-stop adbd 2>/dev/null
-start adbd 2>/dev/null
-
-# 2. Prevent Wi-Fi chip from powering down on screen off
-iw dev wlan0 set power_save off 2>/dev/null
-svc power stayon usb 2>/dev/null
-
-# 3. Generate persistent STA wpa_supplicant configuration
-cat <<EOF > "$WPA_CONF"
-ctrl_interface=/data/misc/wifi/sockets
-update_config=1
-ap_scan=1
-
-network={
-    ssid="$WIFI_SSID"
-    psk="$WIFI_PSK"
-    key_mgmt=WPA-PSK WPA-SAE
-    priority=99
-    scan_ssid=1
-}
-EOF
-chmod 600 "$WPA_CONF"
-
-ensure_sta_connected() {
-    CURRENT_IP=$(ip -4 addr show wlan0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
-    # If camera fell back to AP mode (192.168.2.1) or lost IP, switch to STA mode
-    if [ -z "$CURRENT_IP" ] || [ "$CURRENT_IP" = "192.168.2.1" ]; then
-        log_msg "wlan0 is in AP/disconnected state ($CURRENT_IP). Switching to persistent STA mode..."
-        killall hostapd 2>/dev/null
-        killall dnsmasq 2>/dev/null
-        ifconfig wlan0 up 2>/dev/null
-
-        if ! pgrep -f "wpa_supplicant.*$WPA_CONF" >/dev/null 2>&1; then
-            killall wpa_supplicant 2>/dev/null
-            wpa_supplicant -B -i wlan0 -c "$WPA_CONF" -D nl80211,wext >> "$LOG_FILE" 2>&1
-            sleep 3
-        fi
-        udhcpc -i wlan0 -n -q -t 5 >> "$LOG_FILE" 2>&1 || dhcpcd wlan0 >> "$LOG_FILE" 2>&1
-        CURRENT_IP=$(ip -4 addr show wlan0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
-        log_msg "STA connected! Assigned LAN IP: $CURRENT_IP"
-    fi
-}
-
-# 4. Start lightweight HTTP File Server on port 8088 exposing DCIM media over LAN
-DCIM_DIR="/storage/sdcard0/DCIM"
-[ ! -d "$DCIM_DIR" ] && DCIM_DIR="/mnt/sdcard/DCIM"
-if command -v busybox >/dev/null 2>&1; then
-    busybox httpd -p 8088 -h "$DCIM_DIR" 2>/dev/null
-    log_msg "Started busybox httpd media server on :8088 ($DCIM_DIR)"
-fi
-
-# 5. Main Watchdog Loop: Keep STA alive + Report heartbeat & new MP4 files to Mac Server
-LAST_VIDEO=""
-while true; do
-    ensure_sta_connected
-    CURRENT_IP=$(ip -4 addr show wlan0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
-
-    # Check latest MP4 in DCIM
-    LATEST_MP4=$(find "$DCIM_DIR" -name "*.MP4" -o -name "*.mp4" 2>/dev/null | sort | tail -n 1)
-    if [ -n "$LATEST_MP4" ] && [ "$LATEST_MP4" != "$LAST_VIDEO" ]; then
-        # Wait until file size stabilizes (recording finished & flushed)
-        SIZE1=$(wc -c < "$LATEST_MP4" 2>/dev/null || echo 0)
+ensure_sta() {
+    # DJI powers down the PCIe Wi-Fi device while USB remains available.
+    if [ ! -d /sys/class/net/wlan0 ]; then
+        echo load > /sys/devices/platform/soc/c080000.apb/c448000.pcie/status || return 1
         sleep 2
-        SIZE2=$(wc -c < "$LATEST_MP4" 2>/dev/null || echo 0)
-        if [ "$SIZE1" -gt 0 ] && [ "$SIZE1" = "$SIZE2" ]; then
-            LAST_VIDEO="$LATEST_MP4"
-            REL_PATH="${LATEST_MP4#$DCIM_DIR/}"
-            log_msg "New completed coffee video detected: $REL_PATH ($SIZE2 bytes)"
-            # Notify Mac Coffee Server via HTTP POST
-            if command -v curl >/dev/null 2>&1; then
-                curl -s -X POST "$COFFEE_SERVER_URL/api/camera/webhook" \
-                    -H "Content-Type: application/json" \
-                    -d "{\"event\":\"video_ready\",\"camera\":\"$CAMERA_MODEL\",\"ip\":\"$CURRENT_IP\",\"file_path\":\"$LATEST_MP4\",\"download_url\":\"http://$CURRENT_IP:8088/$REL_PATH\",\"size_bytes\":$SIZE2}" \
-                    >/dev/null 2>&1
-            elif command -v wget >/dev/null 2>&1; then
-                wget -q -O - --post-data="{\"event\":\"video_ready\",\"camera\":\"$CAMERA_MODEL\",\"ip\":\"$CURRENT_IP\",\"file_path\":\"$LATEST_MP4\",\"download_url\":\"http://$CURRENT_IP:8088/$REL_PATH\"}" \
-                    --header="Content-Type: application/json" \
-                    "$COFFEE_SERVER_URL/api/camera/webhook" >/dev/null 2>&1
-            fi
-        fi
     fi
+    ip link set wlan0 up || return 1
+    STATUS=$(wpa_cli -p "$CTRL_DIR" -i wlan0 status 2>/dev/null)
+    if [ -z "$STATUS" ] || ! echo "$STATUS" | "$BB" grep -q 'wpa_state='; then
+        # Supplicant drops to uid wifi; mode 0600 root-owned configs are unreadable.
+        chown wifi:wifi "$WPA_CONF"
+        chmod 600 "$WPA_CONF"
+        restorecon "$WPA_CONF" 2>/dev/null
+        wpa_supplicant -B -i wlan0 -c "$WPA_CONF" -D nl80211 >> "$BASE_DIR/agent.log" 2>&1 || return 1
+        wpa_cli -p "$CTRL_DIR" -i wlan0 scan >/dev/null 2>&1
+        return 1
+    fi
+    if ! echo "$STATUS" | "$BB" grep -q 'wpa_state=COMPLETED'; then
+        case "$STATUS" in *wpa_state=DISCONNECTED*|*wpa_state=INACTIVE*)
+            wpa_cli -p "$CTRL_DIR" -i wlan0 reassociate >/dev/null 2>&1;; esac
+        return 1
+    fi
+    CURRENT_IP=$(ip -4 addr show wlan0 | "$BB" awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}')
+    # Keep our DHCP client alive even when a lease was acquired before launch.
+    DHCP_PID="$BASE_DIR/udhcpc.pid"
+    if ! [ -r "$DHCP_PID" ] || ! kill -0 "$(cat "$DHCP_PID")" 2>/dev/null; then
+        "$BB" udhcpc -b -i wlan0 -p "$DHCP_PID" -s /system/bin/udhcpc.conf.sh -t 5 >> "$BASE_DIR/agent.log" 2>&1
+        CURRENT_IP=$(ip -4 addr show wlan0 | "$BB" awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}')
+    fi
+    [ -n "$CURRENT_IP" ] || return 1
+    return 0
+}
 
+heartbeat() {
+    MAC=$(cat /sys/class/net/wlan0/address)
+    # JSON unicode is supplied by the host-generated env; config contains no password.
+    BODY="{\"device_id\":\"$DEVICE_ID\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$WIFI_SSID\",\"wifi_mode\":\"STA\",\"agent_version\":\"v3-hg224\"}"
+    # This firmware's wget has no POST support; nc is available as a BusyBox applet.
+    RESPONSE=$({ printf 'POST /api/camera/heartbeat HTTP/1.0\r\nHost: %s:%s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$SERVER_IP" "$SERVER_PORT" "${#BODY}" "$BODY"; } | "$BB" nc -w 5 "$SERVER_IP" "$SERVER_PORT")
+    case "$RESPONSE" in *'200 OK'*) log "heartbeat accepted ip=$CURRENT_IP mac=$MAC";; *) log "heartbeat failed: $RESPONSE";; esac
+}
+
+log 'Starting STA agent; boot auto-start is not installed by this script'
+# Do not restart adbd here: the provisioning command enables TCP once explicitly.
+# The media server is optional; it only exposes the verified DCIM directory.
+if [ -d "$DCIM_DIR" ]; then
+    "$BB" httpd -p 8088 -h "$DCIM_DIR" 2>> "$BASE_DIR/agent.log"
+fi
+while true; do
+    if ensure_sta; then heartbeat; fi
+    [ "${RUN_ONCE:-0}" = 1 ] && break
     sleep 5
 done

@@ -1,28 +1,15 @@
-"""
-DJI Osmo Pocket 3 / Pocket 4 Pro STA Network & Internal Linux/Android Extension Module.
+"""Camera ADB bridge and HG224 STA agent.
 
-Provides:
-1. BLE Wi-Fi STA Provisioning (`dji_ble_sta_provisioner`):
-   Sends the DUML Wi-Fi STA configuration payload over BLE (UUID 0xFFF0 / 0xFFF5) so the camera
-   switches from AP mode (192.168.2.1) into persistent STA mode connected to the home router
-   (e.g., 192.168.5.x).
-2. Internal Camera Shell & Daemon Installer (`CameraInternalBridge`):
-   Connects to the camera's internal embedded Linux/Android environment via ADB over TCP (port 5555)
-   or DUML V1 FTP/Telnet/SSH bridge, and installs a persistent on-camera daemon script:
-   `/data/local/tmp/pocket_sta_agent.sh` (or `/system/bin/pocket_sta_agent.sh`)
-   which:
-   - Keeps `wpa_supplicant` locked to the home router SSID (`STA` mode) across standby/wake
-   - Exposes a lightweight HTTP/JSON & WebSocket RPC control endpoint directly on the camera
-     (Start/Stop recording, query status, list `/DCIM/DJI_001/*.MP4`, push webhook when MP4 closes)
-3. LAN RTSP / HTTP / FTP Media Puller (`CameraLanController`):
-   Discovers the camera on the local subnet, triggers recording start/stop over LAN,
-   streams live audio/video or pulls the newly recorded MP4 over LAN at high speed,
-   and triggers the AI Coffee Report pipeline immediately upon recording completion.
+The agent commands were verified on eagle4_hg224 over root ADB. DUML packet
+builders below retain experimental protocol assumptions; sending a packet does
+not establish association, recording success, or boot persistence.
 """
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 import json
+import ipaddress
+import re
 import os
 import socket
 import struct
@@ -149,118 +136,74 @@ def build_camera_shutter_packet(start: bool = True, seq: int = 10) -> bytes:
 # ---------------------------------------------------------------------------
 
 ON_CAMERA_AGENT_SCRIPT = r"""#!/system/bin/sh
-# =============================================================================
-# Pocket 3 / Pocket 4 Pro Internal Persistent STA & Coffee Hook Daemon
-# Path on camera: /data/local/tmp/pocket_sta_agent.sh
-# =============================================================================
-# Features:
-# 1. Forces wlan0 into persistent STA (Client) mode connected to Home LAN
-#    using wpa_supplicant & udhcpc, surviving screen sleep.
-# 2. Enables ADB over TCP (port 5555) and Telnet/FTP for LAN control.
-# 3. Watches /storage/sdcard0/DCIM/DJI_001 (or /mnt/sdcard/DCIM/100MEDIA)
-#    for newly completed MP4 files and pushes a webhook notification with the
-#    download URL directly to the Mac Coffee Server.
-# =============================================================================
-
-WIFI_SSID="${WIFI_SSID:-你的名字}"
-WIFI_PSK="${WIFI_PSK:-nidemingzi}"
-COFFEE_SERVER_URL="${COFFEE_SERVER_URL:-http://192.168.5.84:8788}"
-CAMERA_MODEL="$(getprop ro.product.model 2>/dev/null || echo 'DJI-Osmo-Pocket')"
-WPA_CONF="/data/local/tmp/wpa_sta_persistent.conf"
-PID_FILE="/data/local/tmp/pocket_sta_agent.pid"
-LOG_FILE="/data/local/tmp/pocket_sta_agent.log"
-
+# Verified on eagle4_hg224. Install in /data/pocket-coffee; firmware is read-only.
+BASE_DIR="${BASE_DIR:-/data/pocket-coffee}"
+[ -r "$BASE_DIR/agent.env" ] && . "$BASE_DIR/agent.env"
+DEVICE_ID="${DEVICE_ID:-pocket4p}"
+SERVER_IP="${SERVER_IP:-192.168.5.84}"
+SERVER_PORT="${SERVER_PORT:-8788}"
+WPA_CONF="${WPA_CONF:-/data/misc/wifi/pocket_sta.conf}"
+CTRL_DIR="${CTRL_DIR:-/data/misc/wifi/sockets}"
+DCIM_DIR="${DCIM_DIR:-/mnt/media_rw/emulated/DCIM}"
+BB=/sbin/busybox
+mkdir -p "$BASE_DIR"
+PID_FILE="$BASE_DIR/agent.pid"
+if [ -r "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then exit 0; fi
 echo $$ > "$PID_FILE"
-log_msg() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-}
+trap 'rm -f "$PID_FILE"; exit' INT TERM EXIT
+log() { echo "$(date) $*" >> "$BASE_DIR/agent.log"; }
 
-log_msg "Starting Pocket Internal STA Agent on $CAMERA_MODEL..."
-
-# 1. Enable ADB over TCP/IP (Port 5555) so Mac can always reach camera shell over LAN
-setprop service.adb.tcp.port 5555 2>/dev/null
-stop adbd 2>/dev/null
-start adbd 2>/dev/null
-
-# 2. Prevent Wi-Fi chip from powering down on screen off
-iw dev wlan0 set power_save off 2>/dev/null
-svc power stayon usb 2>/dev/null
-
-# 3. Generate persistent STA wpa_supplicant configuration
-cat <<EOF > "$WPA_CONF"
-ctrl_interface=/data/misc/wifi/sockets
-update_config=1
-ap_scan=1
-
-network={
-    ssid="$WIFI_SSID"
-    psk="$WIFI_PSK"
-    key_mgmt=WPA-PSK WPA-SAE
-    priority=99
-    scan_ssid=1
-}
-EOF
-chmod 600 "$WPA_CONF"
-
-ensure_sta_connected() {
-    CURRENT_IP=$(ip -4 addr show wlan0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
-    # If camera fell back to AP mode (192.168.2.1) or lost IP, switch to STA mode
-    if [ -z "$CURRENT_IP" ] || [ "$CURRENT_IP" = "192.168.2.1" ]; then
-        log_msg "wlan0 is in AP/disconnected state ($CURRENT_IP). Switching to persistent STA mode..."
-        killall hostapd 2>/dev/null
-        killall dnsmasq 2>/dev/null
-        ifconfig wlan0 up 2>/dev/null
-
-        if ! pgrep -f "wpa_supplicant.*$WPA_CONF" >/dev/null 2>&1; then
-            killall wpa_supplicant 2>/dev/null
-            wpa_supplicant -B -i wlan0 -c "$WPA_CONF" -D nl80211,wext >> "$LOG_FILE" 2>&1
-            sleep 3
-        fi
-        udhcpc -i wlan0 -n -q -t 5 >> "$LOG_FILE" 2>&1 || dhcpcd wlan0 >> "$LOG_FILE" 2>&1
-        CURRENT_IP=$(ip -4 addr show wlan0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
-        log_msg "STA connected! Assigned LAN IP: $CURRENT_IP"
-    fi
-}
-
-# 4. Start lightweight HTTP File Server on port 8088 exposing DCIM media over LAN
-DCIM_DIR="/storage/sdcard0/DCIM"
-[ ! -d "$DCIM_DIR" ] && DCIM_DIR="/mnt/sdcard/DCIM"
-if command -v busybox >/dev/null 2>&1; then
-    busybox httpd -p 8088 -h "$DCIM_DIR" 2>/dev/null
-    log_msg "Started busybox httpd media server on :8088 ($DCIM_DIR)"
-fi
-
-# 5. Main Watchdog Loop: Keep STA alive + Report heartbeat & new MP4 files to Mac Server
-LAST_VIDEO=""
-while true; do
-    ensure_sta_connected
-    CURRENT_IP=$(ip -4 addr show wlan0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
-
-    # Check latest MP4 in DCIM
-    LATEST_MP4=$(find "$DCIM_DIR" -name "*.MP4" -o -name "*.mp4" 2>/dev/null | sort | tail -n 1)
-    if [ -n "$LATEST_MP4" ] && [ "$LATEST_MP4" != "$LAST_VIDEO" ]; then
-        # Wait until file size stabilizes (recording finished & flushed)
-        SIZE1=$(wc -c < "$LATEST_MP4" 2>/dev/null || echo 0)
+ensure_sta() {
+    # DJI powers down the PCIe Wi-Fi device while USB remains available.
+    if [ ! -d /sys/class/net/wlan0 ]; then
+        echo load > /sys/devices/platform/soc/c080000.apb/c448000.pcie/status || return 1
         sleep 2
-        SIZE2=$(wc -c < "$LATEST_MP4" 2>/dev/null || echo 0)
-        if [ "$SIZE1" -gt 0 ] && [ "$SIZE1" = "$SIZE2" ]; then
-            LAST_VIDEO="$LATEST_MP4"
-            REL_PATH="${LATEST_MP4#$DCIM_DIR/}"
-            log_msg "New completed coffee video detected: $REL_PATH ($SIZE2 bytes)"
-            # Notify Mac Coffee Server via HTTP POST
-            if command -v curl >/dev/null 2>&1; then
-                curl -s -X POST "$COFFEE_SERVER_URL/api/camera/webhook" \
-                    -H "Content-Type: application/json" \
-                    -d "{\"event\":\"video_ready\",\"camera\":\"$CAMERA_MODEL\",\"ip\":\"$CURRENT_IP\",\"file_path\":\"$LATEST_MP4\",\"download_url\":\"http://$CURRENT_IP:8088/$REL_PATH\",\"size_bytes\":$SIZE2}" \
-                    >/dev/null 2>&1
-            elif command -v wget >/dev/null 2>&1; then
-                wget -q -O - --post-data="{\"event\":\"video_ready\",\"camera\":\"$CAMERA_MODEL\",\"ip\":\"$CURRENT_IP\",\"file_path\":\"$LATEST_MP4\",\"download_url\":\"http://$CURRENT_IP:8088/$REL_PATH\"}" \
-                    --header="Content-Type: application/json" \
-                    "$COFFEE_SERVER_URL/api/camera/webhook" >/dev/null 2>&1
-            fi
-        fi
     fi
+    ip link set wlan0 up || return 1
+    STATUS=$(wpa_cli -p "$CTRL_DIR" -i wlan0 status 2>/dev/null)
+    if [ -z "$STATUS" ] || ! echo "$STATUS" | "$BB" grep -q 'wpa_state='; then
+        # Supplicant drops to uid wifi; mode 0600 root-owned configs are unreadable.
+        chown wifi:wifi "$WPA_CONF"
+        chmod 600 "$WPA_CONF"
+        restorecon "$WPA_CONF" 2>/dev/null
+        wpa_supplicant -B -i wlan0 -c "$WPA_CONF" -D nl80211 >> "$BASE_DIR/agent.log" 2>&1 || return 1
+        wpa_cli -p "$CTRL_DIR" -i wlan0 scan >/dev/null 2>&1
+        return 1
+    fi
+    if ! echo "$STATUS" | "$BB" grep -q 'wpa_state=COMPLETED'; then
+        case "$STATUS" in *wpa_state=DISCONNECTED*|*wpa_state=INACTIVE*)
+            wpa_cli -p "$CTRL_DIR" -i wlan0 reassociate >/dev/null 2>&1;; esac
+        return 1
+    fi
+    CURRENT_IP=$(ip -4 addr show wlan0 | "$BB" awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}')
+    # Keep our DHCP client alive even when a lease was acquired before launch.
+    DHCP_PID="$BASE_DIR/udhcpc.pid"
+    if ! [ -r "$DHCP_PID" ] || ! kill -0 "$(cat "$DHCP_PID")" 2>/dev/null; then
+        "$BB" udhcpc -b -i wlan0 -p "$DHCP_PID" -s /system/bin/udhcpc.conf.sh -t 5 >> "$BASE_DIR/agent.log" 2>&1
+        CURRENT_IP=$(ip -4 addr show wlan0 | "$BB" awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}')
+    fi
+    [ -n "$CURRENT_IP" ] || return 1
+    return 0
+}
 
+heartbeat() {
+    MAC=$(cat /sys/class/net/wlan0/address)
+    # JSON unicode is supplied by the host-generated env; config contains no password.
+    BODY="{\"device_id\":\"$DEVICE_ID\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$WIFI_SSID\",\"wifi_mode\":\"STA\",\"agent_version\":\"v3-hg224\"}"
+    # This firmware's wget has no POST support; nc is available as a BusyBox applet.
+    RESPONSE=$({ printf 'POST /api/camera/heartbeat HTTP/1.0\r\nHost: %s:%s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$SERVER_IP" "$SERVER_PORT" "${#BODY}" "$BODY"; } | "$BB" nc -w 5 "$SERVER_IP" "$SERVER_PORT")
+    case "$RESPONSE" in *'200 OK'*) log "heartbeat accepted ip=$CURRENT_IP mac=$MAC";; *) log "heartbeat failed: $RESPONSE";; esac
+}
+
+log 'Starting STA agent; boot auto-start is not installed by this script'
+# Do not restart adbd here: the provisioning command enables TCP once explicitly.
+# The media server is optional; it only exposes the verified DCIM directory.
+if [ -d "$DCIM_DIR" ]; then
+    "$BB" httpd -p 8088 -h "$DCIM_DIR" 2>> "$BASE_DIR/agent.log"
+fi
+while true; do
+    if ensure_sta; then heartbeat; fi
+    [ "${RUN_ONCE:-0}" = 1 ] && break
     sleep 5
 done
 """
@@ -273,29 +216,22 @@ done
 @dataclass
 class CameraNodeState:
     device_id: str
-    model: str                          # "DJI Osmo Pocket 3" or "DJI Osmo Pocket 4 Pro"
-    wifi_mode: str = "STA"              # "STA" (Persistent LAN) or "AP" (192.168.2.1)
-    lan_ip: str = "192.168.5.108"
-    ssid: str = "Home-WiFi-5G"
-    mac_address: str = "60:60:1F:8A:4C:21"
+    model: str
+    wifi_mode: str = "unknown"
+    lan_ip: str = ""
+    ssid: str = ""
+    mac_address: str = ""
     adb_port: int = 5555
     http_media_port: int = 8088
     duml_udp_port: int = 9004
-    rtsp_url: str = "rtsp://192.168.5.108:554/live/0"
-    internal_daemon_installed: bool = True
-    internal_daemon_version: str = "v2.4.0-sta-ext"
-    recording_state: str = "idle"       # "idle" | "recording" | "transferring"
-    battery_percent: int = 94
-    sd_free_gb: float = 112.4
-    last_heartbeat: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    capabilities: List[str] = field(default_factory=lambda: [
-        "Persistent STA Mode (wpa_supplicant keepalive)",
-        "ADB over TCP (:5555) Root Shell",
-        "DUML v1 UDP Remote Shutter (:9004)",
-        "BusyBox HTTP Direct DCIM Pull (:8088)",
-        "RTSP 1080p60 Live Stream + PCM Audio (:554)",
-        "Auto Webhook Push on Recording Stop",
-    ])
+    rtsp_url: str = ""
+    internal_daemon_installed: bool = False
+    internal_daemon_version: str = ""
+    recording_state: str = "unknown"
+    battery_percent: Optional[int] = None
+    sd_free_gb: Optional[float] = None
+    last_heartbeat: str = ""
+    capabilities: List[str] = field(default_factory=list)
 
 
 class CameraInternalBridge:
@@ -324,58 +260,16 @@ class CameraInternalBridge:
                     "password": "********",
                     "subnet": "192.168.5.0/24",
                     "mac_server_ip": "192.168.5.84",
-                    "mac_server_port": 8765,
+                    "mac_server_port": 8788,
                     "keepalive_interval_s": 5,
                     "prevent_sleep_in_sta": True,
                 },
                 "cameras": {
-                    "pocket4p": asdict(
-                        CameraNodeState(
-                            device_id="pocket4p",
-                            model="DJI Osmo Pocket 4 Pro",
-                            wifi_mode="STA",
-                            lan_ip="192.168.5.108",
-                            ssid="Home_Coffee_LAN",
-                            mac_address="60:60:1F:4P:99:A1",
-                            rtsp_url="rtsp://192.168.5.108:554/live/0",
-                            battery_percent=96,
-                            sd_free_gb=218.6,
-                        )
-                    ),
-                    "pocket3": asdict(
-                        CameraNodeState(
-                            device_id="pocket3",
-                            model="DJI Osmo Pocket 3",
-                            wifi_mode="STA",
-                            lan_ip="192.168.5.109",
-                            ssid="Home_Coffee_LAN",
-                            mac_address="60:60:1F:3P:44:B2",
-                            rtsp_url="rtsp://192.168.5.109:554/live/0",
-                            battery_percent=88,
-                            sd_free_gb=114.2,
-                        )
-                    ),
+                    key: asdict(CameraNodeState(device_id=key, model=model))
+                    for key, model in (("pocket4p", "DJI Osmo Pocket 4 Pro"),
+                                       ("pocket3", "DJI Osmo Pocket 3"))
                 },
-                "command_log": [
-                    {
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "target": "pocket4p (192.168.5.108)",
-                        "cmd": "DUML [07:47] STA Provision -> SSID: Home_Coffee_LAN",
-                        "output": "ACK 0x00 | wlan0 switched AP(192.168.2.1) -> STA(192.168.5.108)",
-                    },
-                    {
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "target": "pocket4p (192.168.5.108:5555)",
-                        "cmd": "adb push pocket_sta_agent.sh /data/local/tmp/ && nohup sh /data/local/tmp/pocket_sta_agent.sh &",
-                        "output": "PID 4182 running | httpd :8088 active | power_save=off | DCIM watcher ready",
-                    },
-                    {
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "target": "pocket3 (192.168.5.109:5555)",
-                        "cmd": "adb push pocket_sta_agent.sh /data/local/tmp/ && nohup sh /data/local/tmp/pocket_sta_agent.sh &",
-                        "output": "PID 3819 running | httpd :8088 active | power_save=off | DCIM watcher ready",
-                    },
-                ],
+                "command_log": [],
             }
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(default_cfg, f, ensure_ascii=False, indent=2)
@@ -387,6 +281,46 @@ class CameraInternalBridge:
     def save_state(self, state: Dict[str, Any]) -> None:
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
+
+    def record_heartbeat(self, payload: Dict[str, Any], source_ip: str) -> Dict[str, Any]:
+        """Record agent observations; verify STA only for a matching LAN peer."""
+        state = self.load_state()
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "Expected a JSON object"}
+        device_id = payload.get("device_id")
+        if not isinstance(device_id, str) or device_id not in state["cameras"]:
+            return {"ok": False, "error": "Unknown camera"}
+        try:
+            address = ipaddress.IPv4Address(payload.get("ip", ""))
+            network = ipaddress.IPv4Network(state["sta_network"]["subnet"])
+            if address not in network or address in (network.network_address, network.broadcast_address):
+                raise ValueError("Address outside STA network")
+            mac = payload.get("mac_address", "")
+            if not isinstance(mac, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac):
+                raise ValueError("Invalid MAC address")
+            if payload.get("wifi_mode") != "STA":
+                raise ValueError("Expected STA mode")
+        except (ValueError, TypeError) as error:
+            return {"ok": False, "error": str(error)}
+        now = datetime.now().astimezone().isoformat()
+        camera = state["cameras"][device_id]
+        verified = source_ip == str(address)
+        camera.update(lan_ip=str(address), mac_address=mac.lower(),
+                      ssid=str(payload.get("ssid", "")), wifi_mode="STA" if verified else "unverified",
+                      last_heartbeat=now, internal_daemon_installed=True,
+                      internal_daemon_version=str(payload.get("agent_version", "")))
+        camera.setdefault("verification", {}).update(
+            checked_at=now, status="live_sta_heartbeat" if verified else "heartbeat_source_mismatch",
+            heartbeat_verified=verified, sta_connection_verified=verified,
+            agent_installation_verified=verified, verified_sta_ip=str(address) if verified else None,
+            heartbeat_source_ip=source_ip, mac_address_source="Agent wlan0 sysfs observation")
+        self.save_state(state)
+        return {"ok": True, "device_id": device_id, "last_heartbeat": now, "sta_verified": verified}
+
+    def sta_status(self) -> Dict[str, Any]:
+        state = self.load_state()
+        state["sta_network"].pop("password", None)
+        return {"ok": True, "sta_network": state["sta_network"], "cameras": state["cameras"]}
 
     def scan_usb_and_serial_devices(self) -> Dict[str, Any]:
         """
@@ -577,7 +511,6 @@ class CameraInternalBridge:
             cam["lan_ip"] = lan_ip
             cam["rtsp_url"] = f"rtsp://{lan_ip}:554/live/0"
             cam["internal_daemon_installed"] = False
-            cam["last_heartbeat"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             state["cameras"][device_id] = cam
 
         log_entry = {
@@ -741,7 +674,6 @@ class CameraInternalBridge:
             sock.close()
 
         cam["recording_state"] = "recording" if is_start else "idle"
-        cam["last_heartbeat"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         log_entry = {
             "time": datetime.now().strftime("%H:%M:%S"),
@@ -760,46 +692,3 @@ class CameraInternalBridge:
             "duml_hex": pkt.hex(" ").upper(),
             "log_entry": log_entry,
         }
-
-    def _emulate_camera_shell(self, cam: Dict[str, Any], cmd: str, ssid: str) -> str:
-        ip = cam["lan_ip"]
-        model = cam["model"]
-        if "wpa_cli" in cmd or "iwconfig" in cmd or "iw dev" in cmd:
-            return (
-                f"Interface wlan0\n"
-                f"  ifindex 3\n"
-                f"  type managed (STA)\n"
-                f"  ssid {ssid}\n"
-                f"  channel 149 (5745 MHz), width: 80 MHz, center1: 5775 MHz\n"
-                f"  txpower 20.00 dBm | power_save: off\n"
-                f"  inet {ip}/24 brd 192.168.5.255"
-            )
-        if "ps" in cmd:
-            return (
-                "PID   USER     TIME  COMMAND\n"
-                "    1 root     0:02  /init\n"
-                "  412 root     1:18  /system/bin/dji_vision_service\n"
-                "  445 root     0:54  /system/bin/dji_camera_hal\n"
-                "  618 wifi     0:19  wpa_supplicant -B -i wlan0 -c /data/local/tmp/wpa_sta_persistent.conf\n"
-                "  802 root     0:05  busybox httpd -p 8088 -h /storage/sdcard0/DCIM\n"
-                " 4182 root     0:11  /system/bin/sh /data/local/tmp/pocket_sta_agent.sh"
-            )
-        if "ls" in cmd and ("DCIM" in cmd or "sdcard" in cmd):
-            return (
-                "/storage/sdcard0/DCIM/DJI_001:\n"
-                "-rw-rw---- 1 root sdcard_rw 418291712 2026-11-15 09:42 DJI_20261115_094210_001.MP4\n"
-                "-rw-rw---- 1 root sdcard_rw 194821120 2026-11-15 09:50 DJI_20261115_095012_002.MP4\n"
-                "-rw-rw---- 1 root sdcard_rw    948210 2026-11-15 09:50 DJI_20261115_095012_002.LRF"
-            )
-        if "uname" in cmd or "getprop" in cmd:
-            return (
-                f"Linux {model.replace(' ', '-')} 5.10.168-dji-ambarella #1 SMP PREEMPT arm64\n"
-                f"[ro.product.model]: [{model}]\n"
-                f"[service.adb.tcp.port]: [5555]\n"
-                f"[persist.dji.wifi.mode]: [STA]\n"
-                f"[persist.dji.wifi.sta.ip]: [{ip}]"
-            )
-        return (
-            f"[{model} root@{ip} /data/local/tmp]# {cmd}\n"
-            f"Executed on internal STA node ({ip}:5555) -> exit_code=0"
-        )

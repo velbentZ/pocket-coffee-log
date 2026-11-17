@@ -378,3 +378,109 @@ packet or a host-origin POST as success.
 
 Validation: `make test` passed all 13 tests. These tests exercise repository
 behavior; they do not prove live STA connectivity or installation.
+
+## 2026-11-18: working root ADB and first verified STA association
+
+This supersedes the previous offline blocker **for the successful portion of
+this session**. `/opt/homebrew/bin/adb devices -l` directly returned serial
+`123456789ABCDEF device`, product/device `eagle4_hg224`, model
+`Android_NATIVE_on_e4_hg224`. The user's ADB server was not killed or replaced.
+`adb shell id` returned uid/gid 0 and context `u:r:su:s0`.
+`uname -a` returned Linux 5.4.123-rt59-g817cddd0ea60-dirty-ab36000,
+aarch64, PREEMPT_RT, build date Aug 25 2026. Android properties, Bionic linker
+messages and Android init services were observed. SELinux remains Enforcing.
+Camera wall clock was Jan 3 2000, so receiver timestamps must use the Mac clock.
+
+Filesystem inspection (`df -h`, `mount`, directory listings): `/system` is
+read-only ext4 (`sdc19`, 951M); `/data` is writable ext4 (`sdc23`, 108M);
+`/blackbox` is writable ext4 (`sdc24`, 4.3G). Actual media volume is
+`/mnt/media_rw/emulated` (exFAT, sdc27, 104G), containing `DCIM/DJI_001`.
+`/amt` and `/etc/wifi` are absent. The system uses `/system/bin/sh`.
+
+Initially only lo, tunnels and RNDIS `192.168.42.2/24` were present. DJI
+`dji_network` was running; no active hostapd or supplicant was found.
+Kernel logs showed DJI unloaded the PCIe Wi-Fi device about six seconds after
+boot. The Wi-Fi module `aic8800m80x2p_fdrv` remained loaded. The old
+`start_wifi.sh` hardcodes another product's nonexistent PCIe path and starts
+an AP; it was inspected, not executed. The actual writable device control is:
+
+```sh
+echo load > /sys/devices/platform/soc/c080000.apb/c448000.pcie/status
+```
+
+This restored wlan0 and wlan1 without disturbing USB ADB. Live wlan0 MAC was
+`88:22:33:77:33:99`, different from the prior DUML MAC `9c:5a:8a:97:4f:b5`.
+This report records the observed active interface MAC, not an assumed factory
+identity. The driver appears to use a default MAC on this manual load; factory
+MAC initialization was not reproduced or changed.
+
+The actual working station commands were:
+
+```sh
+ip link set wlan0 up
+# Config: hex UTF-8 SSID, PBKDF2-derived WPA2 PSK, country=CN, scan_ssid=1
+# ctrl_interface=/data/misc/wifi/sockets
+chown wifi:wifi /data/misc/wifi/pocket_sta.conf
+chmod 600 /data/misc/wifi/pocket_sta.conf
+restorecon /data/misc/wifi/pocket_sta.conf
+wpa_supplicant -B -i wlan0 -c /data/misc/wifi/pocket_sta.conf -D nl80211
+wpa_cli -p /data/misc/wifi/sockets -i wlan0 scan
+busybox udhcpc -i wlan0 -s /system/bin/udhcpc.conf.sh -n -q -t 5
+```
+
+Supplicant is v2.11-9 and drops to uid wifi. A root-owned mode-0600 config
+fails with Permission denied even under `/data/misc/wifi`; wifi ownership
+resolved this without weakening SELinux. `-f` is unsupported; supplicant logs
+go to Android logcat. The BusyBox executable is `/sbin/busybox` v1.26.2;
+`udhcpc`, `nc`, `httpd`, `nohup` and `wget` are applets, not standalone binaries.
+This wget lacks POST support, so the agent sends HTTP POST through BusyBox nc.
+
+Live `wpa_cli status` confirmed `mode=station`, `wpa_state=COMPLETED`,
+SSID `你的名字`, BSSID `b4:72:d4:65:ee:14`, 5220 MHz, WPA2-PSK/CCMP.
+DHCP returned **192.168.5.93/24**, lease 86400 seconds; `ip addr show wlan0`
+confirmed it. Vendor DHCP hook emits `ifconfig: bad address '+'`, missing
+`route`, and unsupported resolver-default warnings, but the address was set.
+Camera `ping -c 3 192.168.5.84`: 3/3 replies, 0% loss. Mac
+`ping -c 3 192.168.5.93`: 3/3 replies, 0% loss, 5.250–7.301 ms.
+This proves LAN traffic during this interval, not ongoing availability.
+
+Agent script and `agent.env` were pushed to writable persistent
+`/data/pocket-coffee/`; supplicant credentials are stored separately under
+`/data/misc/wifi/pocket_sta.conf` with mode 0600. `adb tcpip 5555` was attempted
+but did not yield a confirmed successful restart; USB and LAN subsequently
+disappeared. No causal relationship between TCP request and disconnect was
+established. No wireless ADB success is claimed at this stage. The device
+needs to return online for agent execution and end-to-end heartbeat checks.
+
+Persistence boundary: `/data` survives process restarts as a disk-backed
+filesystem; reboot survival has not been tested. The inspected boot path is
+`start_dji_system.sh` -> product/platform config functions. Product debug
+startup invokes `/system/bin/debug.sh`, but that file does not exist and
+`/system` is read-only. No writable automatic boot hook was established, no
+system remount or init/firmware modification was made, and no automatic
+cold-boot or sleep/wake guarantee is claimed. The agent retries interface
+loading, association and DHCP while its process is alive. Restart manually:
+
+```sh
+adb -s 123456789ABCDEF shell 'busybox nohup /system/bin/sh /data/pocket-coffee/pocket_sta_agent.sh </dev/null >/data/pocket-coffee/console.log 2>&1 &'
+```
+
+Server routes now accept POST `/api/camera/heartbeat` and GET
+`/api/camera/sta`. Receiver validates device, IPv4 subnet, MAC, and STA mode;
+only a matching LAN source verifies the reported STA address. The server
+supplies the heartbeat time, never accepts a client-provided timestamp as
+proof, and never infers boot persistence from a heartbeat. Status omits Wi-Fi
+password. A host-origin unit-test POST is explicitly not live hardware proof.
+Default camera telemetry and synthetic command logs were removed; Pocket3
+has not been tested and its prior example state is now marked unobserved.
+Media HTTP, shutter control, RTSP and video completion webhooks are not yet
+verified by this session.
+
+Repository validation after implementation: `make test` passed all **17**
+tests, including HTTP ingestion, invalid payload rejection, LAN-source
+verification boundaries and unobserved-camera defaults. `sh -n` on the
+exported agent and `git diff --check` passed. Server restarted on port 8788;
+GET `/api/camera/sta` returned HTTP 200. The final revised agent has not been
+pushed or executed after the camera disconnected; the earlier pushed copy
+must be replaced on reconnection. Its media server startup and DHCP lease
+renewal remain implementation behavior awaiting live validation.
