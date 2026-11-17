@@ -534,3 +534,279 @@ pending a restored data transport.
 Validation in this attempt: `make test` passed all 17 tests; exported-agent
 `sh -n` and `git diff --check` returned success. These checks validate repository
 behavior only and do not substitute for live hardware verification.
+
+
+## 2026-11-18 USB restored: live STA deployment verified
+
+This section supersedes the earlier blocked transport observation for this run.
+Raw host-timestamped commands and complete output: `reports/sta-live-usb-restored-20261118.json`.
+No host ADB server restart, adbd restart, TCP ADB activation, USB configuration
+change, reboot, remount, firmware write or init modification was performed.
+
+USB serial `123456789ABCDEF` remained `device`; `adb shell id` returned
+`uid=0(root)` with `u:r:su:s0`. Pushed latest `data/pocket_sta_agent.sh` to
+`/data/pocket-coffee/pocket_sta_agent.sh`, chmod 755, and started with:
+
+```sh
+adb shell 'busybox nohup /system/bin/sh /data/pocket-coffee/pocket_sta_agent.sh </dev/null >/data/pocket-coffee/console.log 2>&1 &'
+```
+
+Local and camera SHA256 matched: `1de38c6d19fc0710cf46f7d523af08874939fa00ff2bec745cc9b16923c30b87`.
+Agent PID 5206, httpd PID 5214; DHCP and supplicant were observed running.
+A named kernel wake lock `pocket_coffee_verification` was acquired and read
+back alongside `SysMode`; it is left active for the live session. This is
+not proof against application-level auto-power-off or sleep/wake recovery.
+
+`wlan0` already existed on entry, so the script did not need its PCIe `load`
+branch this run. The configured PCIe status node is write-only (`--w-------`);
+reading it returned Permission denied. No claim of a new PCIe load is made.
+The agent brought up association with `wpa_state=COMPLETED`, `mode=station`,
+SSID `你的名字` (escaped UTF-8 in wpa_cli), BSSID `b4:72:d4:65:ee:14`,
+5220 MHz, WPA2-PSK/CCMP, MAC `88:22:33:77:33:99`, IPv4 `192.168.5.93/24`.
+DHCP obtained a fresh 86400-second lease. The vendor hook still emits
+`ifconfig: bad address '+'`, `route: not found` and resolver warnings, but
+LAN heartbeat and media traffic succeeded. No vendor script was changed.
+
+### Actual heartbeat evidence
+
+The background agent log shows repeated `heartbeat accepted` entries.
+For the full response below, an additional POST using the same HTTP/nc
+protocol and observed device fields was executed **inside the camera shell**,
+connecting over Wi-Fi to `192.168.5.84:8788`. No Mac-origin synthetic POST
+was used. Server response verified the matching source IP.
+Camera wall clock is January 2000; receiver timestamps below are host supplied.
+
+```http
+HTTP/1.0 200 OK
+Server: SimpleHTTP/0.6 Python/3.9.6
+Date: Tue, 17 Nov 2026 16:27:01 GMT
+Content-Type: application/json; charset=utf-8
+Content-Length: 113
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Content-Type
+
+{"ok": true, "device_id": "pocket4p", "last_heartbeat": "2026-11-18T00:27:01.173066+08:00", "sta_verified": true}
+```
+
+Agent/status/log evidence (includes historical earlier failed log entries):
+
+```text
+bssid=b4:72:d4:65:ee:14
+freq=5220
+ssid=\xe4\xbd\xa0\xe7\x9a\x84\xe5\x90\x8d\xe5\xad\x97
+id=0
+mode=station
+wifi_generation=6
+pairwise_cipher=CCMP
+group_cipher=CCMP
+key_mgmt=WPA2-PSK
+wpa_state=COMPLETED
+ip_address=192.168.5.93
+p2p_device_address=88:22:33:77:33:9b
+address=88:22:33:77:33:99
+uuid=1c625e2a-4f8e-506a-9cfe-9f2e21787677
+ieee80211ac=1
+bss_max_idle_period=300
+10: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    inet 192.168.5.93/24 brd 192.168.5.255 scope global wlan0
+       valid_lft forever preferred_lft forever
+-rwxr-xr-x 1 root root 3589 2026-11-18 00:20 /data/pocket-coffee/pocket_sta_agent.sh
+1de38c6d19fc0710cf46f7d523af08874939fa00ff2bec745cc9b16923c30b87  /data/pocket-coffee/pocket_sta_agent.sh
+5206
+SysMode pocket_coffee_verification
+WARNING: linker: Warning: "/system/lib64/libclang_rt.ubsan_standalone-aarch64-android.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+WARNING: linker: Warning: "/system/lib64/libclang_rt.ubsan_standalone-aarch64-android.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+WARNING: linker: Warning: "/system/lib64/libclang_rt.ubsan_standalone-aarch64-android.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+WARNING: linker: Warning: "/system/lib64/libclang_rt.ubsan_standalone-aarch64-android.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+udhcpc: started, v1.26.2
+start script
+udhcpc: sending discover
+udhcpc: sending select for 192.168.5.93
+udhcpc: lease of 192.168.5.93 obtained, lease time 86400
+start script
+start script
+ifconfig: bad address '+' : No address associated with hostname
+deleting routers
+/system/bin/udhcpc.conf.sh[37]: route: not found
+interface:wlan0
+domain:domain
+dns:192.168.5.1
+200 0 Resolver command succeeded
+500 0 Resolver unknown command
+Mon Jan  3 22:16:14 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:16:19 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:16:24 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:16:30 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:16:35 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:16:40 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:16:45 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:16:51 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:16:56 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:17:01 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:17:06 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:17:12 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:17:17 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:17:22 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:17:27 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+Mon Jan  3 22:17:33 CST 2000 heartbeat accepted ip=192.168.5.93 mac=88:22:33:77:33:99
+
+```
+
+GET `http://127.0.0.1:8788/api/camera/sta` after metadata update:
+
+```json
+{
+  "ok": true,
+  "sta_network": {
+    "ssid": "你的名字",
+    "subnet": "192.168.5.0/24",
+    "mac_server_ip": "192.168.5.84",
+    "mac_server_port": 8788,
+    "keepalive_interval_s": 5,
+    "prevent_sleep_in_sta": true
+  },
+  "cameras": {
+    "pocket4p": {
+      "device_id": "pocket4p",
+      "model": "DJI Osmo Pocket 4 Pro",
+      "wifi_mode": "STA",
+      "lan_ip": "192.168.5.93",
+      "ssid": "你的名字",
+      "mac_address": "88:22:33:77:33:99",
+      "adb_port": 5555,
+      "http_media_port": 8088,
+      "duml_udp_port": 9004,
+      "rtsp_url": "",
+      "internal_daemon_installed": true,
+      "internal_daemon_version": "v3-hg224",
+      "recording_state": "unknown",
+      "battery_percent": null,
+      "sd_free_gb": null,
+      "last_heartbeat": "2026-11-18T00:28:08.184639+08:00",
+      "capabilities": [],
+      "adb_serial": "123456789ABCDEF",
+      "verification": {
+        "checked_at": "2026-11-18T00:28:08.184639+08:00",
+        "status": "live_sta_heartbeat",
+        "usb_product": "OsmoPocket4P-ANHXP5J0022DTW",
+        "adb_serial": "123456789ABCDEF",
+        "adb_state": "device",
+        "sta_connection_verified": true,
+        "agent_installation_verified": true,
+        "persistence_verified": false,
+        "heartbeat_verified": true,
+        "verified_sta_ip": "192.168.5.93",
+        "mac_address_source": "Agent wlan0 sysfs observation",
+        "evidence": [
+          "reports/usb-adb-investigation.md",
+          "reports/sta-live-usb-restored-20261118.json"
+        ],
+        "note": "USB ADB restored. Latest agent deployed and SHA256 matched; live agent heartbeats accepted from 192.168.5.93. Mac HTTP HEAD and full media GET succeeded (server ignored the requested Range header). Online is a live observation, not a boot or sleep/wake guarantee. No verified writable boot hook found in inspected init/platform/product scripts; automatic startup not installed; no reboot tested.",
+        "last_observed_sta_ip": "192.168.5.93",
+        "heartbeat_source_ip": "192.168.5.93",
+        "persistence_status": "not_installed_no_verified_writable_boot_hook",
+        "media_http_verified": true,
+        "media_http_url": "http://192.168.5.93:8088/DJI_001/DJI_20000103215101_0036_D.MP4",
+        "wake_lock": "pocket_coffee_verification",
+        "persistence_details": {
+          "system_mount": "read-only ext4",
+          "vendor_mount": "read-only ext4",
+          "data_mount": "read-write ext4",
+          "blackbox_mount": "read-write ext4",
+          "boot_chain": "/init.rc -> /system/etc/init/init.eagle4.rc service start_dji_system -> /system/bin/start_dji_system.sh -> dji_eagle4_platform_config.sh + product_config.sh (+ sec_func_ctrl.sh)",
+          "candidate_hook": "product_debug_late_config executes /system/bin/debug.sh, but file absent and /system read-only",
+          "writable_boot_hook_found": false,
+          "automatic_startup_installed": false,
+          "reboot_tested": false,
+          "inspection_scope": "/init*.rc, /system/etc/init/*.rc, platform/product/sec_func_ctrl scripts, /system/bin/*.sh path-reference search; /vendor rc/sh search maxdepth 4; /data and /blackbox sh inventory maxdepth 3"
+        }
+      },
+      "status": "online",
+      "status_observed_at": "2026-11-18T00:28:08.184639+08:00"
+    },
+    "pocket3": {
+      "device_id": "pocket3",
+      "model": "DJI Osmo Pocket 3",
+      "wifi_mode": "unknown",
+      "lan_ip": "",
+      "ssid": "你的名字",
+      "mac_address": "",
+      "adb_port": 5555,
+      "http_media_port": 8088,
+      "duml_udp_port": 9004,
+      "rtsp_url": "",
+      "internal_daemon_installed": false,
+      "internal_daemon_version": "",
+      "recording_state": "unknown",
+      "battery_percent": null,
+      "sd_free_gb": null,
+      "last_heartbeat": "",
+      "capabilities": [],
+      "verification": {
+        "status": "not_tested",
+        "sta_connection_verified": false,
+        "heartbeat_verified": false,
+        "persistence_verified": false
+      }
+    }
+  }
+}
+```
+
+`status: online` and `status_observed_at` record this successful live check;
+`verification.status: live_sta_heartbeat` is maintained by the receiver.
+`last_heartbeat`, matching `heartbeat_source_ip`, and `verified_sta_ip` come
+from actual receipt. These observations do not promise future availability.
+Pocket3 remains untested.
+
+### Media HTTP over Wi-Fi
+
+BusyBox httpd runs with `-p 8088 -h /mnt/media_rw/emulated/DCIM`.
+HEAD `/DJI_001/` returns 404 (directory index absent); that response proves
+HTTP reachability but does not alone prove media reads. HEAD on the existing
+`/DJI_001/DJI_20000103215101_0036_D.MP4` returned:
+
+```http
+HTTP/1.0 200 OK
+Content-type: application/octet-stream
+Date: Mon, 03 Jan 2000 14:17:34 GMT
+Connection: close
+Accept-Ranges: bytes
+Last-Modified: Mon, 03 Jan 2000 13:51:03 GMT
+Content-length: 3449916
+
+
+```
+
+A Mac GET requesting `Range: bytes=0-31` succeeded, but this server ignored
+the Range header and returned the full 3449916-byte file;
+first bytes (hex): `0000001c6674797069736f6d0000020069736f6d69736f326d70343100000008`.
+No media files were changed. No optional telnet server was needed or started.
+
+### Persistence: inspected, not installed or reboot verified
+
+Read-only inspection found `/init.rc` starts `start_dji_system`; its service
+definition is `/system/etc/init/init.eagle4.rc:48`, invoking
+`/system/bin/start_dji_system.sh`. That script sources platform and product
+configuration; product also sources `sec_func_ctrl.sh`. Boot functions run
+fs/module/service/misc/debug setup. `product_debug_late_config` invokes
+`/system/bin/debug.sh &`, but that file is absent. `/system` and `/vendor`
+are read-only ext4, while `/data` and `/blackbox` are writable ext4.
+The observed `/data` and `/blackbox` paths in inspected boot scripts are
+configuration flags, log paths and data files, not a verified writable shell
+autostart hook. The bounded script inventory found only our agent under
+those writable locations. Vendor rc/sh search was bounded to depth 4,
+/data and /blackbox shell inventory to depth 3; native binary behavior and
+uninspected deeper paths are not ruled out. One initially guessed service
+filename was absent; the actual definition was then located as above.
+
+No safe writable boot entry was verified or installed. `persistence_verified`
+remains false; `automatic_startup_installed` and `reboot_tested` remain false.
+Disk-backed storage and retries while the process runs do not establish boot
+autostart. Restart manually using the command above after process loss.
+
+Validation for this live run: `make test` passed all 17 tests;
+`sh -n data/pocket_sta_agent.sh` and `git diff --check` succeeded.
+No implementation behavior was changed; configuration and evidence were updated.
+The running receiver continues updating the runtime heartbeat config after this snapshot.
