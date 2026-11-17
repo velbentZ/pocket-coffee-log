@@ -229,7 +229,7 @@ Empty-payload results (duplicate attempts included):
 | 07:36 | e0 |
 | 07:37 | e0 |
 
-Raw lengths 1–160 and 21 string-pattern candidates tested for 07:46, 07:1c, 07:1d, 07:29, 07:b2 and 07:b6. 07:1d accepted raw 19 zero bytes; 07:29 accepted one zero byte. Neither establishes STA semantics. No working STA configuration sequence was confirmed; target credentials and join triggers were therefore not sent, and core/camera_sta_bridge.py was not changed. Pattern coverage is finite, not proof that no valid format exists.
+Raw lengths 1–160 and 21 string-pattern candidates tested for 07:46, 07:1c, 07:1d, 07:29, 07:b2 and 07:b6. Correction: 07:1d rejected raw 19 zero bytes (seq=41432, e3). Only the structured 19-byte credential candidates with prefix [1,0] and [1,1] succeeded (seq=41581 and 41589). Seq=41586 and MAC health seq=41587 timed out; this is consistent with reconfiguration but does not prove association. 07:29 accepted one zero byte; its empty and 2–160-byte requests returned e4, supporting a command-specific length/format check. No working STA configuration sequence was confirmed; target credentials and join triggers were therefore not sent, and core/camera_sta_bridge.py was not changed. Pattern coverage is finite, not proof that no valid format exists.
 
 Final status polls:
 - 07:48: []
@@ -240,3 +240,36 @@ Final status polls:
 - 07:ae: [{'payload': '000000', 'first_byte': 0}]
 
 07:4d remains 0.0.0.0. LAN ARP snapshot saved separately; no successful association established. No RNDIS ARP or subnet ping sweep performed. Evidence: targeted-sta-discovery.jsonl and targeted-sta-discovery.py. `make test` passed.
+
+
+## Dynamic credential follow-up (2026-11-17)
+
+Live USB MAC baseline again returned `009c5a8a974fb5`. Credentials were loaded
+from `data/camera_sta_config.json`, without logging request contents.
+`07:1d` accepted **26-byte** `[1, flag, ssid_len, ssid, psk_len, psk]`
+requests for both flag 0 and flag 1 (12-byte UTF-8 SSID, 10-byte password),
+returning `00` for each. This disproves the fixed-19-byte interpretation and
+supports a variable-length credential format. The precise meanings of mode
+and flag and the complete parser validation rules remain unproven.
+
+After each request, polling for 12 seconds covered 07:07, 18, 30, 44, 48, 4a,
+4b, 4d, ae. SSID getter remained the camera AP name; 4a returned
+`0000054661696c00` and 4b `00ff00054661696c00` (both contain `Fail`);
+4d remained `0000000000`. No successful STA association was established.
+LAN ARP snapshots contain no camera hardware MAC. RNDIS initialization and
+packet-filter setup succeeded; ARP replies were received for 192.168.42.2
+and 192.168.2.1. These USB-side addresses do not establish a LAN DHCP lease.
+No fresh LAN subnet sweep was performed, so cache absence is not conclusive.
+
+07:46 zero payload lengths 161–500: 339 returned e4; length 499 timed out
+both initially and on retry, while MAC health responded. Length 499 produces
+a 512-byte DUML frame, so a transport packet-boundary issue is an alternative
+to command-level rejection. It must not be counted as an e4 response.
+The same 26-byte flag-0 credential pattern returned: 07:46 e4; 07:43 ff;
+07:47 no response (health check succeeded); 07:4a 00; 07:4b 0000.
+The last two ACKs alone do not establish setter semantics or connection.
+
+Evidence: `dynamic-sta-verification.py`, `dynamic-sta-verification.jsonl`,
+`dynamic-sta-arp.txt`, `dynamic-sta-rndis.py`, `dynamic-sta-rndis.json`.
+No production STA command change was made because association was not verified.
+`make test`: all 13 tests passed.
