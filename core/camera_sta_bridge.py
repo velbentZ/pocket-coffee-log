@@ -638,60 +638,69 @@ class CameraInternalBridge:
             "provision_result": res,
         }
 
-    def execute_internal_command(self, device_id: str, shell_cmd: str) -> Dict[str, Any]:
-        """
-        Executes a root/shell command inside the camera's Linux/Android environment.
-        If a physical camera is reachable over ADB TCP (:5555), executes directly via ADB protocol;
-        otherwise executes against the camera's virtualized internal state so you can test and inspect
-        the exact camera environment anytime.
+    def adb_transport(self, device_id: str) -> Dict[str, Any]:
+        """Select only an explicitly configured, online camera transport.
+
+        DJI subclass 0x43 experiments can use POCKET_ADB=/tmp/adb_dji and
+        POCKET_ADB_PORT=5038. Enumeration/offline never implies shell access.
+        The USB serial is distinct from the camera's product name.
         """
         state = self.load_state()
-        cam = state["cameras"].get(device_id)
-        if not cam:
+        cam = state.get("cameras", {}).get(device_id)
+        if cam is None:
             return {"ok": False, "error": f"Unknown camera device_id: {device_id}"}
+        settings = state.get("adb", {})
+        binary = os.environ.get("POCKET_ADB", settings.get("binary", "adb"))
+        port = str(os.environ.get("POCKET_ADB_PORT", settings.get("server_port", 5037)))
+        try:
+            if not 1 <= int(port) <= 65535:
+                raise ValueError("Invalid ADB server port")
+            base = [binary, "-P", port]
+            proc = subprocess.run(base + ["devices", "-l"], capture_output=True,
+                                  text=True, timeout=5)
+            if proc.returncode:
+                return {"ok": False, "error": proc.stderr.strip() or "ADB enumeration failed"}
+            devices = {}
+            for line in proc.stdout.splitlines():
+                fields = line.split()
+                if len(fields) >= 2 and fields[1] in ("device", "offline", "unauthorized", "recovery", "sideload"):
+                    devices[fields[0]] = fields[1]
+            serial = cam.get("adb_serial")
+            # Never pick an arbitrary attached phone or use product name as USB serial.
+            candidates = [serial] if serial else []
+            if cam.get("lan_ip"):
+                candidates.append(f"{cam['lan_ip']}:{cam.get('adb_port', 5555)}")
+            for target in candidates:
+                if devices.get(target) == "device":
+                    return {"ok": True, "argv": base + ["-s", target], "serial": target,
+                            "transport": "usb" if target == serial else "tcp"}
+            return {"ok": False, "error": "No live ADB transport; command was not executed",
+                    "devices": devices, "configured_serial": serial}
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            return {"ok": False, "error": str(error)}
 
-        ip = cam["lan_ip"]
-        cmd_clean = shell_cmd.strip()
+    def inspect_internal_wifi(self, device_id: str) -> Dict[str, Any]:
+        """Read capabilities before choosing a device-specific STA setup."""
+        return self.execute_internal_command(device_id,
+            "id; uname -a; command -v sh iw wpa_supplicant wpa_cli ip ifconfig udhcpc; "
+            "iw dev; ip -4 addr; wpa_cli interfaces; ps; ls -ld /data /system /data/local/tmp")
 
-        # Check if real ADB port 5555 is open on the LAN IP
-        probe = self.probe_live_camera(ip, timeout=0.2)
-        if probe["services"].get("adb_tcp"):
-            try:
-                proc = subprocess.run(
-                    ["adb", "-s", f"{ip}:5555", "shell", cmd_clean],
-                    capture_output=True,
-                    text=True,
-                    timeout=4,
-                )
-                output = (proc.stdout or proc.stderr).strip()
-            except Exception as e:
-                return {"ok": False, "device_id": device_id, "error": str(e), "live_socket_connected": True}
-        else:
-            # Emulate authentic DJI Osmo Pocket Ambarella/Android Linux internal shell response
-            return {"ok": False, "device_id": device_id, "ip": ip,
-                    "error": "No live ADB transport; command was not executed",
+    def execute_internal_command(self, device_id: str, shell_cmd: str) -> Dict[str, Any]:
+        """Execute on a confirmed USB or TCP ADB transport; never emulate output."""
+        transport = self.adb_transport(device_id)
+        if not transport["ok"]:
+            return {**transport, "device_id": device_id, "live_socket_connected": False}
+        try:
+            proc = subprocess.run(transport["argv"] + ["shell", shell_cmd.strip()],
+                                  capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return {"ok": False, "device_id": device_id, "error": str(error),
                     "live_socket_connected": False}
-
-        log_entry = {
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "target": f"{device_id} ({ip}:5555)",
-            "cmd": cmd_clean,
-            "output": output,
-        }
-        state.setdefault("command_log", []).insert(0, log_entry)
-        state["command_log"] = state["command_log"][:25]
-        cam["last_heartbeat"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.save_state(state)
-
-        return {
-            "ok": proc.returncode == 0,
-            "exit_code": proc.returncode,
-            "device_id": device_id,
-            "ip": ip,
-            "cmd": cmd_clean,
-            "output": output,
-            "live_socket_connected": probe["services"].get("adb_tcp", False),
-        }
+        return {"ok": proc.returncode == 0, "exit_code": proc.returncode,
+                "device_id": device_id, "serial": transport["serial"],
+                "transport": transport["transport"], "cmd": shell_cmd.strip(),
+                "output": proc.stdout.strip(), "stderr": proc.stderr.strip(),
+                "live_socket_connected": proc.returncode == 0}
 
     def trigger_lan_recording(self, device_id: str, action: str = "start") -> Dict[str, Any]:
         """

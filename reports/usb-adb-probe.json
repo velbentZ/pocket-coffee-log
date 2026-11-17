@@ -1,0 +1,190 @@
+{
+  "product": "OsmoPocket4P-ANHXP5J0022DTW",
+  "serial": "123456789ABCDEF",
+  "interfaces": [
+    {
+      "number": 3,
+      "class": 255,
+      "subclass": 67,
+      "protocol": 1,
+      "endpoints": [
+        {
+          "address": 3,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        },
+        {
+          "address": 132,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        }
+      ],
+      "attempts": [
+        {
+          "version": 16777216,
+          "maximum": 4096,
+          "stage": "header_write",
+          "error": "[Errno 60] Operation timed out"
+        },
+        {
+          "version": 16777217,
+          "maximum": 1048576,
+          "stage": "header_write",
+          "error": "[Errno 60] Operation timed out"
+        }
+      ],
+      "passive_error": "[Errno 60] Operation timed out"
+    },
+    {
+      "number": 4,
+      "class": 255,
+      "subclass": 67,
+      "protocol": 1,
+      "endpoints": [
+        {
+          "address": 4,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        },
+        {
+          "address": 133,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        }
+      ],
+      "attempts": [
+        {
+          "version": 16777216,
+          "maximum": 4096,
+          "stage": "received",
+          "header_written": 24,
+          "payload_written": 7,
+          "hex": "551504a9048a97240000f100000000000000008a84",
+          "classification": "duml_crc_valid"
+        },
+        {
+          "version": 16777217,
+          "maximum": 1048576,
+          "stage": "received",
+          "header_written": 24,
+          "payload_written": 36,
+          "hex": "551504a9040a9d240000f100000000000000006624",
+          "classification": "duml_crc_valid"
+        }
+      ],
+      "passive": {
+        "hex": "554d04a8482adf0c40008168673232340000000000000000000000000000000000000000000000000000000208000000000000020800000000000000000000000000000000000000000000a4e7",
+        "classification": "duml_crc_valid"
+      }
+    },
+    {
+      "number": 5,
+      "class": 255,
+      "subclass": 67,
+      "protocol": 1,
+      "endpoints": [
+        {
+          "address": 7,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        },
+        {
+          "address": 136,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        }
+      ],
+      "attempts": [
+        {
+          "version": 16777216,
+          "maximum": 4096,
+          "stage": "header_write",
+          "error": "[Errno 60] Operation timed out"
+        },
+        {
+          "version": 16777217,
+          "maximum": 1048576,
+          "stage": "header_write",
+          "error": "[Errno 60] Operation timed out"
+        }
+      ],
+      "passive_error": "[Errno 60] Operation timed out"
+    },
+    {
+      "number": 6,
+      "class": 255,
+      "subclass": 67,
+      "protocol": 1,
+      "endpoints": [
+        {
+          "address": 8,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        },
+        {
+          "address": 137,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        }
+      ],
+      "attempts": [
+        {
+          "version": 16777216,
+          "maximum": 4096,
+          "stage": "header_write",
+          "error": "[Errno 60] Operation timed out"
+        },
+        {
+          "version": 16777217,
+          "maximum": 1048576,
+          "stage": "header_write",
+          "error": "[Errno 60] Operation timed out"
+        }
+      ],
+      "passive_error": "[Errno 60] Operation timed out"
+    },
+    {
+      "number": 7,
+      "class": 255,
+      "subclass": 67,
+      "protocol": 1,
+      "endpoints": [
+        {
+          "address": 9,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        },
+        {
+          "address": 138,
+          "status": 0,
+          "max_packet_size": 512,
+          "status_after_clear": 0
+        }
+      ],
+      "attempts": [
+        {
+          "version": 16777216,
+          "maximum": 4096,
+          "stage": "header_write",
+          "error": "[Errno 60] Operation timed out"
+        },
+        {
+          "version": 16777217,
+          "maximum": 1048576,
+          "stage": "header_write",
+          "error": "[Errno 60] Operation timed out"
+        }
+      ],
+      "passive_error": "[Errno 60] Operation timed out"
+    }
+  ]
+}

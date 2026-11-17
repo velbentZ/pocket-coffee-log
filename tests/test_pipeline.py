@@ -56,7 +56,7 @@ class TestPocketCoffeePipeline(unittest.TestCase):
                 res = bridge.provision_sta_mode("pocket4p", "Coffee_5G", "secret", "192.168.5.108")
             self.assertFalse(res["ok"])
             self.assertEqual(res["camera"]["wifi_mode"], "unverified")
-            with patch.object(bridge, "probe_live_camera", return_value={"services": {"adb_tcp": False}}):
+            with patch.object(bridge, "adb_transport", return_value={"ok": False, "error": "No transport"}):
                 exec_res = bridge.execute_internal_command("pocket4p", "iw dev wlan0 info")
             self.assertFalse(exec_res["ok"])
             self.assertFalse(exec_res["live_socket_connected"])
