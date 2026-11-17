@@ -1,8 +1,9 @@
 {
   "ports_probed": 2096,
-  "open_syn_ack": [],
-  "reset_ports": [],
-  "no_observed_response": [
+  "open_syn_ack": [
+    21
+  ],
+  "reset_ports": [
     1,
     2,
     3,
@@ -23,7 +24,6 @@
     18,
     19,
     20,
-    21,
     22,
     23,
     24,
@@ -176,7 +176,9 @@
     171,
     172,
     173,
-    174,
+    174
+  ],
+  "no_observed_response": [
     175,
     176,
     177,
@@ -2099,6 +2101,5 @@
     55555,
     60000,
     65535
-  ],
-  "errors": []
+  ]
 }

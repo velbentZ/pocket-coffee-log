@@ -165,4 +165,14 @@ without authorization. They leave storage interfaces unclaimed.
 
 Validation: `make test` passed all 13 tests. No production code changed.
 
-RNDIS SYN scan: 2096 ports probed, SYN+ACK ports [], RST ports 0, no observed response 2096. Raw RNDIS frames and decoded summary are archived in port-discovery*.json. Responses are attributed by source port, not capture window. The 40 ms per-port window and single attempt can miss responses; this is not an exhaustive 65,535-port scan.
+RNDIS SYN scan: 2,096 ports probed using the current ARP-resolved camera MAC
+(ea:9c:36:fe:5b:fd). Port 21 returned SYN+ACK, 173 ports returned RST,
+and 1,922 had no observed response. No additional open TCP service was found,
+but unresponsive ports are inconclusive. The initial scan used the old MAC
+and was invalid; the archived raw results replace that run with the corrected
+scan. Raw frames and decoded summaries are in port-discovery*.json.
+Responses are attributed by source port, not capture window. The 40 ms
+per-port window, single attempt, and possible rate limiting can miss responses.
+This is not an exhaustive 65,535-port scan. Coverage includes 1–1024,
+5555–5585, 8000–9010 and selected common services listed in the script.
+Both 192.168.42.2 and 192.168.2.1 answered raw RNDIS ARP in this run.

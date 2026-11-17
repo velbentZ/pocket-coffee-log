@@ -13,6 +13,7 @@ try:
  setfilter=control(struct.pack('<7I',5,32,2,0x1010e,4,20,0)+struct.pack('<I',15));r['rndis'].append({'filter':setfilter.hex()})
  it=D.get_active_configuration()[(1,0)];out=next(e.bEndpointAddress for e in it if not e.bEndpointAddress&128);inp=next(e.bEndpointAddress for e in it if e.bEndpointAddress&128)
  import socket
+ peer_mac=None
  for target,source in [('192.168.42.2','192.168.42.1'),('192.168.2.1','192.168.2.2')]:
   mac=bytes.fromhex('020000000084');frame=b'\xff'*6+mac+b'\x08\x06'+struct.pack('!HHBBH',1,0x800,6,4,1)+mac+socket.inet_aton(source)+b'\0'*6+socket.inet_aton(target)
   row={'arp_target':target,'received':[]};r['rndis'].append(row)
@@ -23,6 +24,11 @@ try:
     try:row['received'].append(bytes(D.read(inp,16384,timeout=300)).hex())
     except usb.core.USBError:pass
   except Exception as e:row['error']=str(e)
+  if target=='192.168.42.2':
+   for raw in row['received']:
+    b=bytes.fromhex(raw);off=int.from_bytes(b[8:12],'little')+8;f=b[off:]
+    if f[12:14]==b'\x08\x06' and f[28:32]==socket.inet_aton(target):peer_mac=f[22:28]
+ if peer_mac is None:raise RuntimeError('No camera ARP reply')
  def checksum(b):
   if len(b)%2:b+=b'\0'
   v=sum(struct.unpack('!%dH'%(len(b)//2),b));v=(v&65535)+(v>>16);v=(v&65535)+(v>>16);return (~v)&65535
@@ -31,7 +37,7 @@ try:
   tcp=struct.pack('!HHIIBBHHH',40000,port,100,0,80,2,8192,0,0)
   chk=checksum(src+dst+struct.pack('!BBH',0,6,20)+tcp);tcp=tcp[:16]+struct.pack('!H',chk)+tcp[18:]
   ip=struct.pack('!BBHHHBBH',69,0,40,port,0,64,6,0)+src+dst;ip=ip[:10]+struct.pack('!H',checksum(ip))+ip[12:]
-  frame=bytes.fromhex('56d6c1165fed0200000000840800')+ip+tcp
+  frame=peer_mac+bytes.fromhex('0200000000840800')+ip+tcp
   row={'tcp_syn_port':port,'received':[]};r['rndis'].append(row)
   D.write(out,struct.pack('<11I',1,44+len(frame),36,len(frame),0,0,0,0,0,0,0)+frame,timeout=1000)
   end=time.monotonic()+0.04
