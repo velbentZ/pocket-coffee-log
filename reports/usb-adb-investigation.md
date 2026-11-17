@@ -310,3 +310,71 @@ Reproducible scripts and raw evidence: `bounded-sta-getters.py`,
 The saved RNDIS run uses the valid control source 192.168.2.2; an earlier
 exploratory sweep using network address 192.168.5.0 was superseded.
 No production changes. `make test`: all 13 tests passed.
+
+
+## User-enabled ADB follow-up — 2026-11-17, observed from 23:52 CST
+
+Outcome: **blocked before shell access; STA, installation, persistence and
+camera-origin heartbeat remain unverified.** The user confirmed that the
+camera screen is on and the USB connection is in charge-only mode.
+This does not establish that the device-side ADB service is accepting CNXN.
+
+Live identity: USB product `OsmoPocket4P-ANHXP5J0022DTW`, vendor/product
+`2ca3:0020`, USB serial `123456789ABCDEF`. Product suffix and USB serial are
+not interchangeable. Standard `adb devices -l` and the default macOS backend
+of `/tmp/adb_dji` list no device. With a fresh experimental server and
+`ADB_LIBUSB=1 /tmp/adb_dji -P 5038 devices -l`, the camera is enumerated as
+`123456789ABCDEF offline`; the explicitly selected shell attempt returns
+`adb_dji: device offline`. Rechecked after the user's charge-only confirmation
+with the same result. Experimental server 5038 was stopped after testing.
+No online ADB transport or shell output was obtained.
+
+`python3 daemon/investigate_usb.py --adb` was run after stopping the
+experimental server. This checkout has no `--usb` flag. The saved raw results
+are in `adb-enabled-live-probe.json`: all five candidate interfaces can be
+claimed, endpoint statuses are zero, and interfaces 3/5/6/7 time out at the
+24-byte CNXN **header write** for both offered versions. Interface 4 accepts
+header and payload but returns CRC-valid DUML, not CNXN/AUTH. No USB reset,
+storage-interface claim, undocumented mode setter, or Wi-Fi reconfiguration
+was performed. This confirms failure to establish ADB in this attempt; it
+does not identify why the device is not servicing the candidate endpoints.
+
+Consequently `uname`, `id`, `/proc/cpuinfo`, `df`, `mount`, interface/routes,
+processes and persistent directories cannot be read. Real driver commands,
+SD-card paths, persistent storage and boot hooks cannot be selected from
+this evidence. `core/camera_sta_bridge.py` and `data/pocket_sta_agent.sh` were
+reviewed but not changed or deployed: their Android paths and startup/restart
+assumptions remain unverified on this camera. No reboot or sleep/wake
+persistence test occurred. ADB TCP was not enabled. No camera IP, bidirectional
+LAN ping, or camera-origin HTTP request was verified.
+
+Mac `en0` is `192.168.5.84`; Python PID 51970 already listens on `*:8788`, so
+no duplicate server was started. The actual entry point is `server/app.py`
+(`make server`), not a root `server.py`. A **Mac-origin** POST with `{}` to
+`http://192.168.5.84:8788/api/camera/heartbeat` returns HTTP 404 and
+`Unknown endpoint /api/camera/heartbeat`. This is a server-route probe only,
+not a camera heartbeat. Source inspection confirms this route is absent;
+the exported agent currently posts video webhooks rather than heartbeats.
+Implementing and validating this receiver remains necessary before the
+requested end-to-end heartbeat can pass. These findings are separately saved
+in `adb-enabled-live-status.json` with command arguments, exit codes and
+outputs, including the libusb recheck.
+
+Configuration integrity: `sta_network.mac_server_port` now matches the
+observed listener (8788). Pocket4p's previous example LAN IP, heartbeat,
+capabilities, battery/storage values and installed-agent claims were cleared
+or marked unknown. `verification` explicitly records the ADB blocker and
+null verified STA IP. Existing pocket4p command-log entries are retained but
+marked `legacy_unverified`; they must not be treated as hardware evidence.
+The MAC value is attributed to the prior archived DUML getter, not a fresh
+shell read. Pocket3 was not tested in this attempt.
+
+Resume prerequisite: an actual `device` transport and successful `shell id`.
+Then inspect the requested kernel/filesystem/network details before choosing
+STA commands or writing persistent hooks. Keep USB ADB available while
+verifying association, DHCP, both ping directions, HTTP heartbeat reception
+and restart behavior. Do not interpret an offline transport, a sent DUML
+packet or a host-origin POST as success.
+
+Validation: `make test` passed all 13 tests. These tests exercise repository
+behavior; they do not prove live STA connectivity or installation.

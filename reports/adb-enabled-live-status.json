@@ -1,0 +1,121 @@
+{
+  "observed_at": "2026-11-17T23:52:51.537913+08:00",
+  "commands": [
+    {
+      "argv": [
+        "adb",
+        "devices",
+        "-l"
+      ],
+      "returncode": 0,
+      "stdout": "List of devices attached\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "adb",
+        "shell",
+        "id"
+      ],
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "adb: no devices/emulators found\n"
+    },
+    {
+      "argv": [
+        "/tmp/adb_dji",
+        "devices",
+        "-l"
+      ],
+      "returncode": 0,
+      "stdout": "List of devices attached\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/tmp/adb_dji",
+        "-P",
+        "5038",
+        "devices",
+        "-l"
+      ],
+      "returncode": 0,
+      "stdout": "List of devices attached\n\n",
+      "stderr": "* daemon not running; starting now at tcp:5038\n* daemon started successfully\n"
+    },
+    {
+      "argv": [
+        "/tmp/adb_dji",
+        "-P",
+        "5038",
+        "-s",
+        "123456789ABCDEF",
+        "shell",
+        "id"
+      ],
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "adb_dji: device '123456789ABCDEF' not found\n"
+    },
+    {
+      "argv": [
+        "lsof",
+        "-nP",
+        "-iTCP:8788",
+        "-sTCP:LISTEN"
+      ],
+      "returncode": 0,
+      "stdout": "COMMAND   PID        USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\nPython  51970 zhengjiaxin    4u  IPv4 0x42deeeda7101d4ec      0t0  TCP *:8788 (LISTEN)\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "ipconfig",
+        "getifaddr",
+        "en0"
+      ],
+      "returncode": 0,
+      "stdout": "192.168.5.84\n",
+      "stderr": ""
+    }
+  ],
+  "host_only_heartbeat_route_probe": {
+    "status": 404,
+    "body": "{\"ok\": false, \"error\": \"Unknown endpoint /api/camera/heartbeat\"}"
+  },
+  "charging_mode_recheck": [
+    {
+      "argv": [
+        "/tmp/adb_dji",
+        "-P",
+        "5038",
+        "devices",
+        "-l"
+      ],
+      "environment": {
+        "ADB_LIBUSB": "1"
+      },
+      "returncode": 0,
+      "stdout": "List of devices attached\n123456789ABCDEF        offline usb:0-1 transport_id:1\n\n",
+      "stderr": "* daemon not running; starting now at tcp:5038\n* daemon started successfully\n"
+    },
+    {
+      "argv": [
+        "/tmp/adb_dji",
+        "-P",
+        "5038",
+        "-s",
+        "123456789ABCDEF",
+        "shell",
+        "id"
+      ],
+      "environment": {
+        "ADB_LIBUSB": "1"
+      },
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "adb_dji: device offline\n"
+    }
+  ],
+  "user_observed_state": "Screen on, USB charge-only; user confirmed during this attempt."
+}
