@@ -1,0 +1,60 @@
+16 [{'payload': '00', 'first_byte': 0}]
+Traceback (most recent call last):
+  File "/Users/zhengjiaxin/.t3/scratch/2026-11-15-pocket3-pocket4p-documents-users-zhengjiaxin-a957581e/pocket-coffee-log/reports/targeted-sta-discovery.py", line 46, in <module>
+    r=checked(ci)
+  File "/Users/zhengjiaxin/.t3/scratch/2026-11-15-pocket3-pocket4p-documents-users-zhengjiaxin-a957581e/pocket-coffee-log/reports/targeted-sta-discovery.py", line 39, in checked
+    if not health['responses']: raise RuntimeError('Wi-Fi unavailable; stopping rather than recording invalid probes')
+RuntimeError: Wi-Fi unavailable; stopping rather than recording invalid probes
+17 [{'payload': 'e0', 'first_byte': 224}]
+18 [{'payload': 'e0', 'first_byte': 224}]
+19 [{'payload': 'e0', 'first_byte': 224}]
+20 [{'payload': 'e0', 'first_byte': 224}]
+21 [{'payload': '00', 'first_byte': 0}]
+22 [{'payload': 'e0', 'first_byte': 224}]
+23 [{'payload': 'e0', 'first_byte': 224}]
+24 [{'payload': '01', 'first_byte': 1}]
+25 [{'payload': '00ff434e00', 'first_byte': 0}]
+26 [{'payload': '0000', 'first_byte': 0}]
+27 [{'payload': 'e0', 'first_byte': 224}]
+28 [{'payload': 'e3', 'first_byte': 227}]
+29 [{'payload': 'e3', 'first_byte': 227}]
+30 [{'payload': 'e0', 'first_byte': 224}]
+31 [{'payload': '00', 'first_byte': 0}]
+32 [{'payload': '0000', 'first_byte': 0}]
+33 []
+34 [{'payload': 'e0', 'first_byte': 224}]
+35 [{'payload': 'e0', 'first_byte': 224}]
+36 [{'payload': 'e0', 'first_byte': 224}]
+37 [{'payload': 'e0', 'first_byte': 224}]
+38 [{'payload': 'e0', 'first_byte': 224}]
+39 [{'payload': 'e0', 'first_byte': 224}]
+40 [{'payload': 'e0', 'first_byte': 224}]
+41 [{'payload': 'e4', 'first_byte': 228}]
+42 [{'payload': 'e0', 'first_byte': 224}]
+43 [{'payload': '00', 'first_byte': 0}]
+44 [{'payload': '00a1', 'first_byte': 0}]
+45 [{'payload': 'e0', 'first_byte': 224}]
+46 [{'payload': 'e0', 'first_byte': 224}]
+47 [{'payload': 'e0', 'first_byte': 224}]
+48 [{'payload': '01', 'first_byte': 1}]
+49 [{'payload': '00', 'first_byte': 0}]
+50 [{'payload': 'e0', 'first_byte': 224}]
+51 [{'payload': 'e0', 'first_byte': 224}]
+52 [{'payload': '01', 'first_byte': 1}]
+53 [{'payload': 'e0', 'first_byte': 224}]
+54 [{'payload': 'e0', 'first_byte': 224}]
+55 [{'payload': 'e0', 'first_byte': 224}]
+178 [{'payload': 'e3', 'first_byte': 227}]
+182 [{'payload': 'e3', 'first_byte': 227}]
+raw complete 70
+patterns complete 70
+raw complete 28
+patterns complete 28
+raw complete 29
+patterns complete 29
+raw complete 41
+patterns complete 41
+raw complete 178
+patterns complete 178
+raw complete 182
+patterns complete 182

@@ -176,3 +176,67 @@ per-port window, single attempt, and possible rate limiting can miss responses.
 This is not an exhaustive 65,535-port scan. Coverage includes 1–1024,
 5555–5585, 8000–9010 and selected common services listed in the script.
 Both 192.168.42.2 and 192.168.2.1 answered raw RNDIS ARP in this run.
+
+
+## Targeted live Wi-Fi probe, 2026-11-17
+
+Reconfirmed hardware MAC `9c:5a:8a:97:4f:b5` from live `07:0c`. Previous lines 1793–1952 were USB Errno 19, not valid length tests; line 1158 records the preceding (8,2) 00:85 request, but the log alone cannot prove reboot causality.
+
+No 07:08, 07:0d, 07:0f or (8,2) commands were sent. First run stopped after 07:10 returned 00 and subsequent MAC health check timed out. Reopened handle, resumed at 07:11; missing responses triggered bounded health checks before continuing.
+
+Empty-payload results (duplicate attempts included):
+
+| Command | Responses |
+|---|---|
+| 07:10 | 00 |
+| 07:11 | e0 |
+| 07:12 | e0 |
+| 07:13 | e0 |
+| 07:14 | e0 |
+| 07:15 | 00 |
+| 07:16 | e0 |
+| 07:17 | e0 |
+| 07:18 | 01 |
+| 07:19 | 00ff434e00 |
+| 07:1a | 0000 |
+| 07:1b | e0 |
+| 07:1c | e3 |
+| 07:1d | e3 |
+| 07:1e | e0 |
+| 07:1f | 00 |
+| 07:20 | 0000 |
+| 07:21 | timeout (health checked) |
+| 07:22 | e0 |
+| 07:23 | e0 |
+| 07:24 | e0 |
+| 07:25 | e0 |
+| 07:26 | e0 |
+| 07:27 | e0 |
+| 07:28 | e0 |
+| 07:29 | e4 |
+| 07:2a | e0 |
+| 07:2b | 00 |
+| 07:2c | 00a1 |
+| 07:2d | e0 |
+| 07:2e | e0 |
+| 07:2f | e0 |
+| 07:30 | 01 |
+| 07:31 | 00 |
+| 07:32 | e0 |
+| 07:33 | e0 |
+| 07:34 | 01 |
+| 07:35 | e0 |
+| 07:36 | e0 |
+| 07:37 | e0 |
+
+Raw lengths 1–160 and 21 string-pattern candidates tested for 07:46, 07:1c, 07:1d, 07:29, 07:b2 and 07:b6. 07:1d accepted raw 19 zero bytes; 07:29 accepted one zero byte. Neither establishes STA semantics. No working STA configuration sequence was confirmed; target credentials and join triggers were therefore not sent, and core/camera_sta_bridge.py was not changed. Pattern coverage is finite, not proof that no valid format exists.
+
+Final status polls:
+- 07:48: []
+- 07:4a: [{'payload': '0000054661696c00', 'first_byte': 0}]
+- 07:4b: [{'payload': '00ff00054661696c00', 'first_byte': 0}]
+- 07:4d: [{'payload': '0000000000', 'first_byte': 0}]
+- 07:44: [{'payload': '000101', 'first_byte': 0}]
+- 07:ae: [{'payload': '000000', 'first_byte': 0}]
+
+07:4d remains 0.0.0.0. LAN ARP snapshot saved separately; no successful association established. No RNDIS ARP or subnet ping sweep performed. Evidence: targeted-sta-discovery.jsonl and targeted-sta-discovery.py. `make test` passed.
