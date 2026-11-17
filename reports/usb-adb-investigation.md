@@ -98,3 +98,41 @@ binary's exact instructions and device behavior.
 
 Validation: `make test` passes 13 tests, including offline/wrong-device rejection,
 explicit USB command routing, nonzero shell exits, and DUML/ADB frame distinction.
+
+## Post File Transfer cancellation — 2026-11-17
+
+Live probe after unplug/replug and dismissal of “已完成”:
+
+- Requested invocation with `--rndis` exits 2: this checkout does not implement
+  that option. Re-ran with `--adb --clear-halt`; interfaces 3/5/6/7 still time
+  out writing CNXN headers, with endpoint status zero before/after clearing.
+  Interface 4 accepts CNXN bytes but returns CRC-valid DUML, not ADB.
+- Existing `/tmp/adb_dji -P 5038 devices -l` reports serial
+  `123456789ABCDEF offline`. Experimental server stopped before further probes.
+- Full descriptors and correlated DUML responses are saved in
+  `usb-post-cancel-probe.json`. Interface 0 is E0/01/03, interface 1 is
+  0A/00/00 (IN 81 / OUT 01); 3–7 retain FF/43/01 and previous endpoint pairs.
+  Storage interfaces were not claimed.
+- DUML 00:01 version queries to (8,0), (8,2), (1,0), (7,0) all return
+  matching-sequence/source, CRC-valid responses. (8,2) includes `HG224 AC Ver.13`,
+  (1,0) includes `PP-041`. Wi-Fi 07:07 returns payload `e0` from the first
+  three targets; (7,0) returns AP SSID `OsmoPocket4P-4FB5`.
+  These probes do not identify an ADB/USB mode setter or validate STA support.
+  No undocumented mode-setting sweep was performed.
+- User-space RNDIS INITIALIZE and SET current packet filter (15) both return
+  status zero. ARP for 192.168.42.2 succeeds, MAC 56:d6:c1:16:5f:ed.
+  ARP for 192.168.2.1 receives no response within three seconds.
+- Raw Ethernet/IP/TCP SYN probes to 192.168.42.2 receive SYN+ACK on port 21;
+  ports 22, 23, 80, 443, 554, 5555, 7878, 9004, 22345 return RST+ACK.
+  Retransmissions from port 21 can appear in later capture windows; decode
+  source ports rather than attributing every frame to the current probe.
+  FTP authentication/content access and UDP services remain untested.
+- `data/pocket_sta_config.json` is absent from both workspace and mirror.
+  No online ADB shell or verified DUML STA connection was obtained, so no
+  persistent hook was deployed and no LAN association/IP is claimed.
+
+This establishes accessible RNDIS TCP port 21 after cancellation, but there is
+no pre-cancellation RNDIS baseline proving that dismissal enabled it.
+Follow-up remains necessary for FTP access, UDP services, and documented mode
+commands. `make test`: 13 tests passed. Probe script archived alongside JSON;
+its short response windows and limited command/port list are not exhaustive.
