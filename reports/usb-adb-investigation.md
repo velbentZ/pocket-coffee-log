@@ -484,3 +484,53 @@ GET `/api/camera/sta` returned HTTP 200. The final revised agent has not been
 pushed or executed after the camera disconnected; the earlier pushed copy
 must be replaced on reconnection. Its media server startup and DHCP lease
 renewal remain implementation behavior awaiting live validation.
+
+
+## 2026-11-18 reconnect attempt: transport unavailable
+
+The user confirmed the camera was powered on. This attempt could not establish
+any camera shell; powered-on status alone did not establish a USB data connection.
+Raw, timestamped command results and the receiver response are recorded in
+`reports/sta-reconnect-20261118.json`.
+
+- `adb devices -l` returned an empty list. `ioreg -p IOUSB -l` had no
+  Osmo/2ca3/eagle4 match; the full USB tree showed only the AU05 device beneath
+  the host controllers, with no camera.
+- Both requested `adb connect 192.168.5.93:5555` and
+  `adb connect 192.168.42.2:5555` initially completed with `Operation timed out`.
+  Independent socket probes found LAN ports 5555/8088/23 unreachable and all
+  three RNDIS ports timed out. A bounded repeat after host server restart is
+  included in the raw evidence (six-second client timeout).
+- Restarting only the Mac ADB server (`adb kill-server`, `adb start-server`)
+  succeeded, but `adb devices -l` remained empty. No `adb tcpip`, camera-side
+  service restart, USB mode change, reboot, remount or firmware write was run.
+  A wedged host ADB server therefore does not explain the continuing absence;
+  the cause of the earlier camera disconnect remains unknown.
+- The Mac still has `192.168.5.84` on en0. Its ARP table contained the earlier
+  `192.168.5.93` / `88:22:33:77:33:99` association, but three pings received
+  zero replies. A cached ARP entry is not live camera proof.
+- No RNDIS interface is active on the Mac. `route -n get 192.168.42.2` resolves
+  through gateway `192.168.5.1` on en0, so this is not a working direct RNDIS
+  path. The failed TCP probe does not establish camera-side listener state.
+- `curl --noproxy '*' --connect-timeout 3 --max-time 5 -I
+  http://192.168.5.93:8088/DJI_001/` failed with curl exit 28 after roughly
+  three seconds; the recorded repeat failed with curl exit 7 (connection failed).
+  Media HTTP was **not verified**; these results cannot distinguish
+  an unavailable camera from an unavailable httpd process.
+- The existing receiver process listens on `*:8788`; local GET
+  `/api/camera/sta` returns HTTP 200. It still reports an empty
+  `last_heartbeat`. No synthetic POST was sent. There is **no live camera-to-Mac
+  heartbeat proof**, and no `online` state is claimed.
+
+Because no shell was available, the latest agent could not be pushed, chmodded
+or started; wlan0, supplicant, DHCP, init files and mounts could not be inspected
+again. Prior-session filesystem and boot-hook observations above remain
+historical evidence. Automatic boot persistence is neither configured nor tested.
+The config now marks transport verification blocked, clears current
+`verified_sta_ip`, and retains `last_observed_sta_ip: 192.168.5.93` as historical
+context. A cable reseat and awake camera were requested; live deployment remains
+pending a restored data transport.
+
+Validation in this attempt: `make test` passed all 17 tests; exported-agent
+`sh -n` and `git diff --check` returned success. These checks validate repository
+behavior only and do not substitute for live hardware verification.

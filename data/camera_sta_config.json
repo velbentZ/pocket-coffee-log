@@ -29,21 +29,23 @@
       "capabilities": [],
       "adb_serial": "123456789ABCDEF",
       "verification": {
-        "checked_at": "2026-11-18T00:11:49.196567+08:00",
-        "status": "sta_ping_verified_device_disconnected_before_heartbeat",
+        "checked_at": "2026-11-18T00:19:42.616240+08:00",
+        "status": "blocked_transport_unavailable",
         "usb_product": "OsmoPocket4P-ANHXP5J0022DTW",
         "adb_serial": "123456789ABCDEF",
-        "adb_state": "device_then_disconnected",
-        "sta_connection_verified": true,
+        "adb_state": "absent",
+        "sta_connection_verified": false,
         "agent_installation_verified": false,
         "persistence_verified": false,
         "heartbeat_verified": false,
-        "verified_sta_ip": "192.168.5.93",
+        "verified_sta_ip": null,
         "mac_address_source": "Live /sys/class/net/wlan0 and wpa_cli status; differs from prior DUML getter",
         "evidence": [
-          "reports/usb-adb-investigation.md"
+          "reports/usb-adb-investigation.md",
+          "reports/sta-reconnect-20261118.json"
         ],
-        "note": "Root shell, WPA2 station association, DHCP lease and bidirectional 3-packet ping verified in this session. Agent files pushed but heartbeat not yet received; device then disappeared from USB and LAN. Boot persistence not configured or tested."
+        "note": "2026-11-18 reconnect attempt: no camera in macOS USB tree or adb devices, including after host ADB server restart. LAN and RNDIS TCP ADB unreachable; media HTTP request timed out. Prior 192.168.5.93 association is historical evidence only. Latest agent not pushed or executed; no real heartbeat received; boot persistence remains unverified.",
+        "last_observed_sta_ip": "192.168.5.93"
       }
     },
     "pocket3": {
