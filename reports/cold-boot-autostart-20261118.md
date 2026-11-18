@@ -119,6 +119,12 @@ Verified this run (USB still connected):
 2. USB-free cold boot: unplug USB, power-cycle the camera, and observe the Mac
    watcher recover the agent (BLE → STA → LAN ADB → heartbeat) without cable.
 
+Storage evidence for BLE persistence: `/data/misc/bluetooth/9C:5A:8A:97:4F:B6/`
+holds a bonded peer (`64:31:35:1F:11:9D`) and a `cache` directory on the writable
+`/data` partition, so link-layer BLE bonds survive reboot. Whether the DJI
+app-level pairing (`07:45` identifier/pin) also persists without re-approval is
+not established by storage alone and must be confirmed by the live re-pair test.
+
 ## Changes made
 
 - Camera: `persist.adb.tcp.port=5555` (persistent property, `/data/property`).
