@@ -1015,6 +1015,14 @@ class CameraInternalBridge:
                     except BLERecoveryError as error:
                         result["status"] = str(error)
                         self._recovery_last_ble = {"status": str(error), "checked_at": now.isoformat()}
+                        # A non-clean join ACK (e.g. 01ff) or a join timeout still
+                        # leaves the camera associated on the home LAN. The heartbeat
+                        # over LAN ADB, not the BLE ACK, is the recovery criterion.
+                        if str(error) in ("ble_sta_join_rejected", "ble_sta_join_timeout"):
+                            self._next_ble_attempt = time.monotonic() + 60
+                            lan = self.ensure_sta_agent_over_lan(state)
+                            result["status"] = ("waiting_for_lan" if lan["status"] == "lan_adb_unavailable"
+                                                else lan["status"])
                     else:
                         self._recovery_last_ble = {"status": result["ble_status"], "checked_at": now.isoformat()}
                         self._next_ble_attempt = time.monotonic() + 60

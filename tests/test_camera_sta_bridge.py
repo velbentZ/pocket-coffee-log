@@ -62,6 +62,21 @@ class CameraSTABridgeTests(unittest.TestCase):
         self.assertEqual(result['ble_status'], 'sta_join_acknowledged')
         self.assertFalse(result['heartbeat_fresh'])
 
+    def test_auto_recovery_retries_lan_after_non_clean_ble_join_ack(self):
+        from daemon.camera_auto_recovery import BLERecoveryError
+        with patch.object(self.bridge, 'ensure_sta_agent_over_usb',
+                          return_value={'ok': False, 'status': 'usb_unavailable'}), \
+             patch.object(self.bridge, 'ensure_sta_agent_over_lan',
+                          side_effect=[{'ok': False, 'status': 'lan_adb_unavailable'},
+                                       {'ok': True, 'status': 'started'}]) as lan, \
+             patch('daemon.camera_auto_recovery.provision_over_ble',
+                   side_effect=BLERecoveryError('ble_sta_join_rejected')):
+            result = self.bridge.recover_camera_once()
+        self.assertEqual(lan.call_count, 2)
+        self.assertEqual((result['transport'], result['status']), ('ble', 'started'))
+        self.assertEqual(self.bridge.sta_status()['auto_recovery']['last_ble_attempt']['status'],
+                         'ble_sta_join_rejected')
+
     def test_auto_recovery_waits_for_dhcp_before_retrying_ble(self):
         with patch.object(self.bridge, 'ensure_sta_agent_over_usb',
                           return_value={'ok': False, 'status': 'usb_unavailable'}), \

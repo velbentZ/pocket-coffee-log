@@ -21,8 +21,20 @@ path functional and durable:
   listener survives cold boot independently of USB trigger timing.
 - Added durable `auto_recovery` fallbacks (`ble_name`, `lan_ip`, `lan_macs`).
 
-A true USB-free cold boot still requires the user to unplug USB and power-cycle
-the camera; that physical test is pending (see below).
+A true USB-free cold boot was performed and the agent recovered: `adb reboot`
+with the USB cable unplugged, uptime reset to ~2 min, adbd started ~5 s into boot
+(`ro.boottime.adbd`), BLE pairing returned `00 01` (persisted across the reboot,
+no re-approval), BLE switched the camera to STA and it joined the home LAN, and
+the agent restarted with a fresh PID and verified heartbeats. The only manual
+step was driving BLE from an interactive Python session because the launchd
+server lacks macOS Bluetooth permission; granting Bluetooth to Python makes the
+watcher fully autonomous.
+
+A recovery bug was also fixed: a non-clean BLE join ACK (`01ff`) or join timeout
+previously raised `ble_sta_join_rejected`/`ble_sta_join_timeout` and stopped
+recovery even though the camera had joined. `recover_camera_once` now retries LAN
+ADB after those join-stage errors, since a verified heartbeat — not the BLE ACK —
+is the recovery criterion.
 
 ## Boot-hook investigation (read-only, no firmware changed)
 
@@ -77,6 +89,53 @@ while raw TCP connected fine; `adb kill-server && adb start-server` cleared it
 and both USB and LAN transports then enumerated as `device`. This is a Mac-side
 transient, not a camera cold-boot behavior.
 
+## Cold-boot adbd is cable-independent (setup_usb.sh)
+
+`init_usb2` starts `service setup_usb /system/bin/setup_usb.sh 1 1 1 1`. That
+script chooses `sys.usb.config` from `/proc/cmdline` flags, **not** from USB
+cable presence:
+
+- `mp_state=production` → `mpstate=0`.
+- `androidboot.secure_debug=1` → `sec_state!=0` and `sec_exist=0`.
+- The disable condition `mpstate==0 && (sec_state==0 || sec_exist!=0)` is
+  therefore false, so the script takes the **adb-enabled** branch and runs
+  `setprop sys.usb.config rndis,empty_storage,bulk,adb`.
+
+The matching `on property:sys.usb.config=rndis,empty_storage,bulk,adb` trigger
+runs `start adbd` *before* it binds the gadget to the UDC, so adbd starts and
+listens on TCP `5555` (via `service.adb.tcp.port` / `persist.adb.tcp.port`)
+even when no USB cable is attached. Live cmdline confirmed
+`mp_state=production` and `androidboot.secure_debug=1`.
+
+Important distinction: unplugging USB at *runtime* sets `sys.usb.config=none`,
+whose trigger runs `stop adbd` (this is why TCP 5555 refused connections after
+an unplug while the camera kept running). A *cold boot* re-runs `setup_usb.sh`,
+which re-selects the adb config and starts adbd again. The runtime-unplug
+observation does not imply a USB-free cold boot lacks adbd. A physical cold
+boot is still needed to confirm this end to end.
+
+## Live BLE test (USB unplugged, camera still running; no reboot yet)
+
+The camera had only been unplugged, not power-cycled (uptime 9h32m, agent PID
+unchanged), so this exercises BLE recovery on a running camera, not a cold boot:
+
+- First `provision_over_ble`: pairing approved on screen, STA mode `07:48`
+  acknowledged, `07:47` join ACK timed out but the camera functionally re-joined
+  the home LAN (new DHCP IP `.94`, agent heartbeats resumed).
+- Second pairing probe returned `07:45 = 00 01` (already paired, no re-prompt),
+  so pairing persists within a boot session. Cross-reboot persistence is still
+  to be confirmed by a real cold boot.
+- The launchd server's own watcher returned `ble_permission_denied`: the
+  LoginAgent `com.velbentz.pocket-coffee-log` runs the venv Python
+  (`com.apple.python3`) whose macOS Bluetooth TCC permission is not granted.
+  Interactive Python (responsible process = the editor app) has Bluetooth
+  access and can drive BLE; the detached server cannot until Bluetooth is
+  granted to Python in System Settings → Privacy & Security → Bluetooth.
+
+Remaining for full autonomous cable-free cold boot: grant Bluetooth to Python
+(`com.apple.python3`) and restart the LoginAgent, then unplug USB and
+power-cycle the camera and observe BLE → STA → LAN ADB → agent heartbeat.
+
 ## STA association on cold boot
 
 The agent's `wpa_supplicant` uses `/data/misc/wifi/pocket_sta.conf` (home SSID
@@ -125,10 +184,38 @@ holds a bonded peer (`64:31:35:1F:11:9D`) and a `cache` directory on the writabl
 app-level pairing (`07:45` identifier/pin) also persists without re-approval is
 not established by storage alone and must be confirmed by the live re-pair test.
 
+## Verified USB-free cold boot (2026-11-18 ~23:50 CST)
+
+Procedure: `adb -s 123456789ABCDEF reboot`, USB cable unplugged as the camera
+powered down, camera booted with no cable. BLE driven manually from interactive
+Python (server Bluetooth permission not granted).
+
+Evidence:
+
+- Uptime reset to ~2 min (was 9h36m); agent PID changed 12032 → 2893, so the
+  agent was freshly started after boot, not a survivor.
+- `ro.boottime.adbd = 5014049477` ns (~5.0 s into boot): adbd started early via
+  the `setup_usb.sh` boot trigger while USB was unplugged.
+- `persist.adb.tcp.port=5555` survived the reboot; `adb connect 192.168.5.94:5555`
+  succeeded over Wi-Fi (TCP `connect_ex = 0`).
+- BLE pairing after the reboot returned `07:45 = 00 01` (already paired) — the
+  bond in `/data/misc/bluetooth` persists across cold boot, no screen re-approval.
+- `07:48 = 00 00` STA mode acknowledged; `07:47` join ACK was `01ff` (first
+  attempt timed out) but the camera functionally joined the home LAN at `.94`
+  (wlan0 MAC `9c:5a:8a:97:4f:b5`).
+- Agent heartbeats resumed from `.94` (`v7-hg224-camera-mic`, verified source IP).
+
+Remaining for full autonomy: grant Bluetooth to Python (`com.apple.python3`) in
+System Settings → Privacy & Security → Bluetooth and restart the LoginAgent
+`com.velbentz.pocket-coffee-log`; the watcher then drives BLE itself. The join-ACK
+LAN-retry fix removes the other autonomous-recovery blocker.
+
 ## Changes made
 
 - Camera: `persist.adb.tcp.port=5555` (persistent property, `/data/property`).
 - Mac: installed `daemon/requirements-ble.txt` into Python 3.9 user site.
 - Config: `auto_recovery = {ble_name, lan_ip, lan_macs}` in runtime + repo.
-- No change to `pocket_sta_agent.sh` or `camera_sta_bridge.py` was required; the
-  byte-for-byte invariant still holds.
+- `core/camera_sta_bridge.py`: `recover_camera_once` retries LAN ADB after a
+  non-clean BLE join ACK / join timeout (plus a regression test). The agent
+  script is unchanged; `pocket_sta_agent.sh` and `ON_CAMERA_AGENT_SCRIPT` remain
+  byte-identical (SHA-256 `1b5af847…`). `make test`: 80 tests OK (1 skipped).
