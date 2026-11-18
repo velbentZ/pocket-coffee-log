@@ -251,6 +251,54 @@ class TestCoffeeServerAndComparisonPipeline(unittest.TestCase):
         self.assertEqual(m_data["dcim_root"], "/mnt/media_rw/emulated/DCIM/DJI_001")
         self.assertEqual(len(m_data["files"]), 1)
 
+    def test_camera_webhook_auto_pulls_mp4_and_transcribes_camera_audio(self) -> None:
+        media_url = "http://192.168.5.93:8088/DJI_001/DJI_20261118154500_0040_D.MP4"
+        cam_file = "/mnt/media_rw/emulated/DCIM/DJI_001/DJI_20261118154500_0040_D.MP4"
+        local_cached = os.path.join(self.data_dir, "media_cache", "DJI_20261118154500_0040_D.MP4")
+
+        def fake_pull_latest_media(*args, **kwargs):
+            os.makedirs(os.path.dirname(local_cached), exist_ok=True)
+            with open(local_cached, "wb") as f:
+                f.write(b"\x00\x00\x00\x1cftypisom" + b"\x00" * 64)
+            return {
+                "ok": True,
+                "device_id": "pocket4p",
+                "local_path": local_cached,
+                "size_bytes": 92,
+                "partial": False,
+                "media_url": media_url,
+            }
+
+        spoken_on_camera = (
+            "开始录像 今天用的是埃塞花魁日晒浅冲18.5克独立磨豆机尼斯刻度14.5意识浓缩酒八萃取28秒初夜37课 停止录像"
+        )
+        with patch.object(self.camera_bridge, "pull_latest_media", side_effect=fake_pull_latest_media) as pull_mock, patch.object(
+            self.voice_manager.vision_engine, "extract_audio_and_transcribe", return_value=spoken_on_camera
+        ) as asr_mock:
+            status, webhook_res = self.request_json(
+                "POST",
+                "/api/camera/webhook",
+                {
+                    "device_id": "pocket4p",
+                    "camera": "DJI Osmo Pocket 4 Pro",
+                    "ip": "192.168.5.93",
+                    "file_path": cam_file,
+                    "media_url": media_url,
+                },
+            )
+        self.assertEqual(status, 200)
+        self.assertTrue(webhook_res["ok"])
+        pull_mock.assert_called_once()
+        asr_mock.assert_called_once_with(local_cached, fallback_transcript="")
+        rec = webhook_res["record"]
+        self.assertEqual(rec["bean_weight_g"], 18.5)
+        self.assertEqual(rec["grinder_model"], "Niche Zero")
+        self.assertEqual(rec["grind_setting"], "刻度 14.5")
+        self.assertEqual(rec["pressure_bar"], 9.0)
+        self.assertEqual(rec["extraction_time_s"], 28.0)
+        self.assertEqual(rec["yield_g"], 37.0)
+        self.assertEqual(rec["status"], "complete")
+
     def test_records_compare_endpoint_side_by_side_deltas(self) -> None:
         # Baseline fast shot (older)
         self.voice_manager.stop_and_process(

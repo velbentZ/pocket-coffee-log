@@ -91,8 +91,12 @@ class MultimodalVisionEngine:
 
     def extract_audio_and_transcribe(self, video_path: str, fallback_transcript: str = "") -> str:
         """
-        If `video_path` exists locally and `whisper` CLI is installed, runs local speech-to-text.
-        Otherwise returns `fallback_transcript`.
+        Extracts and transcribes the spoken Chinese audio track from a local `.MP4` / `.WAV` / `.M4A`
+        file recorded on DJI Osmo Pocket 3 / Pocket 4 Pro:
+        1. Tries local `mlx_whisper` or `whisper` CLI if installed on PATH.
+        2. Tries macOS native on-device `SFSpeechRecognizer` (`zh-CN`) via `/usr/bin/swift`
+           (extracting audio with `AVAssetExportSession` + `afconvert` if needed).
+        3. Falls back to `fallback_transcript` if no speech is detected or offline tools are unavailable.
         """
         if not video_path or not os.path.isfile(video_path):
             return fallback_transcript
@@ -109,7 +113,189 @@ class MultimodalVisionEngine:
                         return proc.stdout.strip()
                 except Exception:
                     pass
+
+        swift_bin = shutil.which("swift")
+        if swift_bin:
+            mac_transcript = self._transcribe_with_macos_speech(video_path, swift_bin)
+            if mac_transcript:
+                return mac_transcript
+
         return fallback_transcript
+
+    @staticmethod
+    def _transcribe_with_macos_speech(media_path: str, swift_bin: str = "swift") -> str:
+        """
+        Uses macOS native `Speech` (`SFSpeechRecognizer`, locale `zh-CN`) + `AVFoundation`
+        to transcribe spoken Chinese directly from a camera `.MP4` or audio file.
+        """
+        swift_script = r"""
+import Foundation
+import AVFoundation
+import Speech
+
+let mediaPath = CommandLine.arguments[1]
+let mediaURL = URL(fileURLWithPath: mediaPath)
+let asset = AVURLAsset(url: mediaURL)
+if asset.tracks(withMediaType: .audio).isEmpty {
+    exit(0)
+}
+
+var targetURL = mediaURL
+var tempM4A: URL? = nil
+let ext = mediaURL.pathExtension.lowercased()
+if ext == "mp4" || ext == "mov" {
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("pocket_audio_\(ProcessInfo.processInfo.globallyUniqueString).m4a")
+    let sem = DispatchSemaphore(value: 0)
+    if let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) {
+        exporter.outputURL = tmp
+        exporter.outputFileType = .m4a
+        exporter.exportAsynchronously { sem.signal() }
+        _ = sem.wait(timeout: .now() + 15)
+        if FileManager.default.fileExists(atPath: tmp.path) {
+            targetURL = tmp
+            tempM4A = tmp
+        }
+    }
+}
+defer {
+    if let tmp = tempM4A {
+        try? FileManager.default.removeItem(at: tmp)
+    }
+}
+
+guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")), recognizer.isAvailable else {
+    exit(0)
+}
+let req = SFSpeechURLRecognitionRequest(url: targetURL)
+if recognizer.supportsOnDeviceRecognition {
+    req.requiresOnDeviceRecognition = true
+}
+req.shouldReportPartialResults = false
+
+var transcriptOut = ""
+var finished = false
+let _ = recognizer.recognitionTask(with: req) { result, error in
+    if let r = result {
+        transcriptOut = r.bestTranscription.formattedString
+        if r.isFinal {
+            finished = true
+        }
+    }
+    if error != nil {
+        finished = true
+    }
+}
+let deadline = Date().addingTimeInterval(20)
+while !finished && Date() < deadline {
+    RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
+}
+if !transcriptOut.isEmpty {
+    print(transcriptOut)
+}
+"""
+        try:
+            proc = subprocess.run(
+                [swift_bin, "-e", swift_script, media_path],
+                capture_output=True,
+                text=True,
+                timeout=28,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout.strip()
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _extract_with_macos_avfoundation(
+        source: str,
+        target_dir: str,
+        extract_frames: bool,
+        swift_bin: str = "swift",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Uses macOS native `AVFoundation` + `AppKit` via `/usr/bin/swift` to inspect MP4
+        duration/resolution and extract the 4 keyframes (15%, 35%, 70%, 90%) when `ffmpeg`
+        is not installed on the system.
+        """
+        swift_script = r"""
+import Foundation
+import AVFoundation
+import AppKit
+
+let sourcePath = CommandLine.arguments[1]
+let targetDir = CommandLine.arguments[2]
+let doExtract = CommandLine.arguments[3] == "1"
+
+let url = URL(fileURLWithPath: sourcePath)
+let asset = AVURLAsset(url: url)
+let dur = CMTimeGetSeconds(asset.duration)
+guard dur.isFinite && dur > 0 else {
+    exit(2)
+}
+
+var width = 0
+var height = 0
+if let vt = asset.tracks(withMediaType: .video).first {
+    let sz = vt.naturalSize.applying(vt.preferredTransform)
+    width = Int(abs(sz.width.rounded()))
+    height = Int(abs(sz.height.rounded()))
+}
+
+var extractedPaths: [String: Bool] = [:]
+if doExtract {
+    try? FileManager.default.createDirectory(atPath: targetDir, withIntermediateDirectories: true)
+    let gen = AVAssetImageGenerator(asset: asset)
+    gen.appliesPreferredTrackTransform = true
+    gen.maximumSize = CGSize(width: 640, height: 640)
+    gen.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
+    gen.requestedTimeToleranceAfter = CMTime(seconds: 0.25, preferredTimescale: 600)
+
+    let specs: [(Double, Int, String)] = [
+        (0.15, 15, "scale_dose"),
+        (0.35, 35, "grinder_dial"),
+        (0.70, 70, "pressure_crema"),
+        (0.90, 90, "yield_timer")
+    ]
+    for (pct, pctInt, slug) in specs {
+        let outName = String(format: "frame_%02dpct_%@.jpg", pctInt, slug)
+        let outPath = (targetDir as NSString).appendingPathComponent(outName)
+        let t = CMTime(seconds: dur * pct, preferredTimescale: 600)
+        if let cgImg = try? gen.copyCGImage(at: t, actualTime: nil) {
+            let rep = NSBitmapImageRep(cgImage: cgImg)
+            if let jpg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
+                try? jpg.write(to: URL(fileURLWithPath: outPath))
+                extractedPaths[outName] = FileManager.default.fileExists(atPath: outPath)
+            }
+        }
+    }
+}
+
+let out: [String: Any] = [
+    "duration_s": dur,
+    "width": width,
+    "height": height,
+    "extracted": extractedPaths
+]
+if let data = try? JSONSerialization.data(withJSONObject: out),
+   let str = String(data: data, encoding: .utf8) {
+    print(str)
+}
+"""
+        try:
+            proc = subprocess.run(
+                [swift_bin, "-e", swift_script, source, target_dir, "1" if extract_frames else "0"],
+                capture_output=True,
+                text=True,
+                timeout=25,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip().startswith("{")]
+                if lines:
+                    return json.loads(lines[-1])
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def _derive_session_slug(video_source: str) -> str:
@@ -129,7 +315,8 @@ class MultimodalVisionEngine:
     ) -> Dict[str, Any]:
         """
         Uses `ffprobe` / `ffmpeg` (when available on PATH and `video_source` is a reachable
-        local file) to read real video duration/resolution and extract thumbnail JPEG keyframes
+        local file), or macOS native `AVFoundation` via `/usr/bin/swift` when `ffmpeg` is
+        absent, to read real video duration/resolution and extract thumbnail JPEG keyframes
         at 15%, 35%, 70%, 90% into `data/keyframes/<session_or_basename>/`.
         Falls back gracefully when offline, given a remote camera HTTP URL, or in unit tests
         with synthetic paths.
@@ -148,6 +335,7 @@ class MultimodalVisionEngine:
 
         ffprobe_bin = shutil.which("ffprobe")
         ffmpeg_bin = shutil.which("ffmpeg")
+        swift_bin = shutil.which("swift")
         ffmpeg_available = bool(ffprobe_bin and ffmpeg_bin)
 
         duration_s: Optional[float] = None
@@ -155,6 +343,7 @@ class MultimodalVisionEngine:
         height: Optional[int] = None
         size_bytes: Optional[int] = os.path.getsize(source) if is_local_file else None
         fallback_reason: Optional[str] = None
+        avf_result: Optional[Dict[str, Any]] = None
 
         if is_local_file and ffprobe_bin:
             try:
@@ -196,6 +385,22 @@ class MultimodalVisionEngine:
                     fallback_reason = "ffprobe_failed"
             except Exception as exc:
                 fallback_reason = f"ffprobe_error: {exc}"
+        elif is_local_file and swift_bin and (size_bytes or 0) > 1024:
+            avf_result = self._extract_with_macos_avfoundation(
+                source=source,
+                target_dir=target_dir,
+                extract_frames=extract_frames,
+                swift_bin=swift_bin,
+            )
+            if avf_result:
+                if avf_result.get("duration_s"):
+                    duration_s = float(avf_result["duration_s"])
+                if avf_result.get("width"):
+                    width = int(avf_result["width"])
+                if avf_result.get("height"):
+                    height = int(avf_result["height"])
+            else:
+                fallback_reason = "ffmpeg_not_installed"
         elif is_remote_url:
             fallback_reason = "remote_http_source_deferred"
         elif not is_local_file:
@@ -255,6 +460,29 @@ class MultimodalVisionEngine:
                 )
             if extracted_count == 0 and fallback_reason is None:
                 fallback_reason = "ffmpeg_frame_extraction_failed"
+        elif extract_frames and is_local_file and avf_result and duration_s and duration_s > 0:
+            for pct, stage_slug, stage_label in KEYFRAME_PLAN:
+                pct_int = int(round(pct * 100))
+                ts = round(duration_s * pct, 2)
+                out_path = os.path.join(target_dir, f"frame_{pct_int:02d}pct_{stage_slug}.jpg")
+                extracted_ok = os.path.isfile(out_path)
+                if extracted_ok:
+                    extracted_count += 1
+                keyframes.append(
+                    {
+                        "percentage": pct_int,
+                        "fraction": pct,
+                        "stage_key": stage_slug,
+                        "gimbal_preset": STAGE_TO_GIMBAL_PRESET.get(stage_slug, "reset_center"),
+                        "stage": stage_label,
+                        "timestamp_s": ts,
+                        "image_path": out_path if extracted_ok else None,
+                        "planned_image_path": out_path,
+                        "extracted": extracted_ok,
+                    }
+                )
+            if extracted_count == 0 and fallback_reason is None:
+                fallback_reason = "avfoundation_frame_extraction_failed"
         else:
             if not extract_frames and fallback_reason is None:
                 fallback_reason = "frame_extraction_disabled"

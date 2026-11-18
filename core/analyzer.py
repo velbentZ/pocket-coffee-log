@@ -76,7 +76,7 @@ def extract_parameters_from_transcript(
             rec.brew_method = "冰滴冷萃 (Ice Drip Cold Brew)"
         else:
             rec.brew_method = "冷萃咖啡 (Cold Brew)"
-    elif any(k in text for k in ["意式浓缩", "浓缩", "Espresso", "espresso", "双份浓缩", "Double", "SOE", "意式"]):
+    elif any(k in text for k in ["意式浓缩", "意识浓缩", "浓缩", "Espresso", "espresso", "双份浓缩", "Double", "SOE", "意式"]):
         if "SOE" in text.upper():
             rec.brew_method = "SOE 单一产地意式浓缩"
         elif "拿铁" in text:
@@ -93,23 +93,23 @@ def extract_parameters_from_transcript(
     # 2. Coffee Bean Name & Roast (用的什么咖啡豆)
     bean_patterns = [
         r"(?:豆子|咖啡豆)(?:今天)?(?:用的是|用|选的是|是|拿了)([^，。；！\n]{3,28})",
-        r"(?:今天做|今天冲|今天萃)(?:的是|一杯)?([^，。；！\n]{3,25}?(?:豆|耶加雪菲|花魁|瑰夏|西达摩|曼特宁|肯尼亚|哥伦比亚|埃塞|拼配|SOE))",
-        r"((?:埃塞俄比亚|巴拿马|哥伦比亚|肯尼亚|洪都拉斯|云南|巴西|印尼)[^，。；\n]{2,20})",
-        r"((?:花魁|瑰夏|耶加雪菲|西达摩|天堂庄园|翡翠庄园|栓皮栎|雪莉)[^，。；\n]{0,14})",
+        r"(?:今天做|今天冲|今天萃|今天用的是|今天用)(?:的是|一杯)?([^，。；！\n]{2,25}?(?:豆|耶加雪菲|花魁|瑰夏|西达摩|曼特宁|肯尼亚|哥伦比亚|埃塞|拼配|SOE)[^0-9，。；\n]{0,10})",
+        r"((?:埃塞俄比亚|巴拿马|哥伦比亚|肯尼亚|洪都拉斯|云南|巴西|印尼)[^0-9，。；\n]{2,20})",
+        r"((?:花魁|瑰夏|耶加雪菲|西达摩|天堂庄园|翡翠庄园|栓皮栎|雪莉)[^0-9，。；\n]{0,14})",
     ]
     for pat in bean_patterns:
         m = re.search(pat, text)
         if m:
             candidate = m.group(1).strip()
             # Clean trailing filler words
-            candidate = re.sub(r"(?:称重|克重|磨豆|研磨).*$", "", candidate).strip(" ，、的")
+            candidate = re.sub(r"(?:称重|称豆|克重|磨豆|研磨|浅冲).*$", "", candidate).strip(" ，、的")
             if len(candidate) >= 2:
                 rec.bean_name = candidate
                 break
 
-    if "中浅烘" in text:
+    if "中浅烘" in text or "中浅冲" in text:
         rec.bean_roast = "中浅烘焙"
-    elif "浅烘" in text:
+    elif "浅烘" in text or "浅冲" in text:
         rec.bean_roast = "浅度烘焙"
     elif "中深烘" in text:
         rec.bean_roast = "中深烘焙"
@@ -120,9 +120,9 @@ def extract_parameters_from_transcript(
 
     # 3. Bean weight (咖啡豆称重是多少)
     weight_patterns = [
-        r"(?:咖啡豆|豆子|粉量|称重|装粉|用了|称了)[^0-9一二两三四五六七八九十，。]{0,12}?([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十点]+)\s*(?:克|g|G)",
-        r"([0-9]+(?:\.[0-9]+)?)\s*(?:克|g|G)\s*(?:咖啡豆|豆子|粉)",
-        r"(?:瑰夏|花魁|耶加|西达摩|曼特宁|拼配|豆)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:克|g|G)",
+        r"(?:咖啡豆|豆子|粉量|称重|称豆|装粉|用了|称了|浅烘|浅冲|中烘|深烘|日晒|水洗|厌氧)[^0-9一二两三四五六七八九十，。]{0,12}?([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十点]+)\s*(?:克|课|g|G)",
+        r"([0-9]+(?:\.[0-9]+)?)\s*(?:克|课|g|G)\s*(?:咖啡豆|豆子|粉)",
+        r"(?:瑰夏|花魁|耶加|西达摩|曼特宁|拼配|豆)[^0-9]{0,8}?([0-9]+(?:\.[0-9]+)?)\s*(?:克|课|g|G)",
     ]
     for pat in weight_patterns:
         m = re.search(pat, text)
@@ -144,11 +144,11 @@ def extract_parameters_from_transcript(
             break
 
     # 5. Grinder type & model (额外的磨豆机还是咖啡机自身自带的)
-    external_models = ["Niche Zero", "Niche", "DF64", "DF83", "マイト", "迈赫迪", "EK43", "Weber", "EG-1", "Lagom", "P64", "P100", "C40", "司令官", "Eureka", "Mignon", "松屋", "巫师"]
+    external_models = ["Niche Zero", "Niche", "尼斯", "DF64", "DF83", "マイト", "迈赫迪", "EK43", "Weber", "EG-1", "Lagom", "P64", "P100", "C40", "司令官", "Eureka", "Mignon", "松屋", "巫师"]
     found_model = None
     for mod in external_models:
         if mod.lower() in text.lower():
-            found_model = mod
+            found_model = "Niche Zero" if mod == "尼斯" else mod
             break
 
     if any(k in text for k in ["自带磨豆机", "自带的磨豆机", "咖啡机自带", "内置磨豆机", "一体机自带"]):
@@ -165,8 +165,8 @@ def extract_parameters_from_transcript(
 
     # 6. Yield / Liquid output (出液是多少)
     yield_patterns = [
-        r"(?:出液量?|萃取液|液重|出杯量?|萃出|流出了?|接了|注水|加水)[^0-9一二两三四五六七八九十]{0,6}([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十点]+)\s*(?:克|毫升|g|G|ml|ML)",
-        r"([0-9]+(?:\.[0-9]+)?)\s*(?:克|毫升|g|ml)\s*(?:咖啡液|浓缩液|出液)",
+        r"(?:出液量?|初夜|出夜|初液|萃取液|液重|出杯量?|萃出|流出了?|接了|注水|加水)[^0-9一二两三四五六七八九十]{0,6}([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十点]+)\s*(?:克|课|毫升|g|G|ml|ML)",
+        r"([0-9]+(?:\.[0-9]+)?)\s*(?:克|课|毫升|g|ml)\s*(?:咖啡液|浓缩液|出液)",
     ]
     for pat in yield_patterns:
         m = re.search(pat, text)
@@ -181,7 +181,7 @@ def extract_parameters_from_transcript(
     hour_m = re.search(r"(?:萃取|浸泡|冷藏|时间)[^0-9]{0,6}([0-9]+(?:\.[0-9]+)?)\s*(?:小时|h|H)", text)
     sec_m = re.search(r"(?:萃取时间|萃取了?|耗时|读秒|用了|时间是?)[^0-9一二两三四五六七八九十]{0,6}([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十]+)\s*(?:秒|s|S)", text)
     if not sec_m:
-        sec_m = re.search(r"([0-9]{2}(?:\.[0-9]+)?)\s*(?:秒|s)\s*(?:出液|结束|完成|停)", text)
+        sec_m = re.search(r"([0-9]{2}(?:\.[0-9]+)?)\s*(?:秒|s)\s*(?:出液|初夜|出夜|结束|完成|停)", text)
 
     if sec_m:
         rec.extraction_time_s = parse_cn_or_float(sec_m.group(1))
@@ -191,12 +191,13 @@ def extract_parameters_from_transcript(
             rec.extraction_time_s = round(hours * 3600, 1)
 
     # 8. Pressure (萃取压力是多少 bar)
+    norm_pressure_text = text.replace("酒八", "9bar").replace("九八", "9bar")
     pressure_m = re.search(
-        r"(?:压力表?|萃取压力|峰值压力|压力)(?:稳定在|在|是|达到|为)?\s*([0-9]+(?:\.[0-9]+)?|[一二三四五六七八九十点]+)\s*(?:bar|Bar|BAR|帕|巴)",
-        text,
+        r"(?:压力表?|萃取压力|峰值压力|压力)(?:稳定在|在|是|达到|为)?\s*([0-9]+(?:\.[0-9]+)?|[一二三四五六七八九十点]+)\s*(?:bar|Bar|BAR|帕|巴|霸|八)",
+        norm_pressure_text,
     )
     if not pressure_m:
-        pressure_m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:bar|Bar|BAR|巴)", text)
+        pressure_m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:bar|Bar|BAR|巴|霸)", norm_pressure_text)
     if pressure_m:
         rec.pressure_bar = parse_cn_or_float(pressure_m.group(1))
 

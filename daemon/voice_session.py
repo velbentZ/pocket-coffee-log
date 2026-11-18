@@ -243,8 +243,34 @@ class VoiceWakeupSessionManager:
             ]
             full_transcript = " ".join(self.active_session.get("transcript_chunks", [])).strip()
 
-        if not full_transcript and os.path.isfile(video_file):
-            full_transcript = self.vision_engine.extract_audio_and_transcribe(video_file, fallback_transcript="")
+        local_analysis_video_file = video_file
+        if not os.path.isfile(local_analysis_video_file) and resolved_media_url:
+            cached_candidate = os.path.join(self.store.data_dir, "media_cache", os.path.basename(resolved_media_url))
+            if os.path.isfile(cached_candidate):
+                local_analysis_video_file = cached_candidate
+            elif not full_transcript and hasattr(self.camera_bridge, "pull_latest_media"):
+                try:
+                    pull_res = self.camera_bridge.pull_latest_media(
+                        device_id=cam_id,
+                        filename=os.path.basename(resolved_media_url) or None,
+                    )
+                    if isinstance(pull_res, dict) and pull_res.get("ok") and pull_res.get("local_path"):
+                        local_analysis_video_file = str(pull_res["local_path"])
+                except Exception:
+                    pass
+
+        if not full_transcript and os.path.isfile(local_analysis_video_file):
+            full_transcript = self.vision_engine.extract_audio_and_transcribe(
+                local_analysis_video_file, fallback_transcript=""
+            )
+            if full_transcript:
+                utterances = [
+                    {
+                        "text": full_transcript,
+                        "source": "camera_video_audio",
+                        "timestamp": datetime.now().strftime("%H:%M:%S"),
+                    }
+                ]
 
         if not full_transcript:
             full_transcript = "我要开始制作咖啡。今天用的是埃塞俄比亚耶加雪菲水洗浅烘，豆子称重18克，独立磨豆机 Niche Zero 刻度 15，做意式浓缩，9 bar 萃取 28 秒，出液 36 克。"
@@ -255,7 +281,7 @@ class VoiceWakeupSessionManager:
 
         # 4. Run MultimodalVisionEngine keyframe inspection & match Personal Bean Library
         vision_analysis = self.vision_engine.analyze_video_keyframes(
-            video_path=video_file,
+            video_path=local_analysis_video_file if (override_transcript is None and os.path.isfile(local_analysis_video_file)) else video_file,
             spoken_transcript=full_transcript,
             camera_device=model,
             hint_overrides=hint_overrides,

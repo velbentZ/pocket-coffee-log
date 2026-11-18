@@ -1299,8 +1299,8 @@
     <!-- Zero-Intervention Voice Wakeup & Live Narration Bar -->
     <section class="voice-bar">
       <div class="voice-info">
-        <h3>🎙️ 零人工干预 · 语音自动启停录制流水线</h3>
-        <p id="voiceEventDesc">说出「我要开始制作咖啡 / 开始录制」相机自动开录；边做边口述参数，说「停止录制 / 结束录制 / 做好了」自动暂停录制并生成报告。</p>
+        <h3>🎙️ 零人工干预 · 直接对着相机说话启停录制 &amp; 自动生成报告</h3>
+        <p id="voiceEventDesc"><strong>【方案 A · 直接对着相机说】</strong>开启相机原生语音控制后，对着相机说<strong>「开始录像」</strong>开录 → 边做边对着相机口述参数 → 说<strong>「停止录像」</strong>停录；相机保存 MP4 后自动触发 Mac 拉取视频、识别音轨语音+4阶段画面并生成报告。</p>
       </div>
       <div class="voice-input-group">
         <input
@@ -1308,14 +1308,14 @@
           class="voice-input"
           type="text"
           onkeydown="if(event.key==='Enter'){event.preventDefault();sendVoiceUtterance(false);}"
-          placeholder="点击「🎤 开启语音监听」直接说话，或在此输入指令：如「开始制作咖啡」→ 口述参数 →「停止录制」"
+          placeholder="平时直接对着相机说「开始录像 / 停止录像」即可；也可在此手动输入或用网页麦克风调试"
         />
-        <button class="btn" id="btnMicListen" type="button" onclick="startBrowserSpeech()" title="开启持续麦克风语音控制（说开始录制/停止录制）">🎤 开启语音监听</button>
+        <button class="btn" id="btnMicListen" type="button" onclick="startBrowserSpeech()" title="网页端备用麦克风监听">🎤 网页麦克风(备用)</button>
         <button class="btn btn-primary" type="button" onclick="sendVoiceUtterance(false)">🗣️ 发送语音指令</button>
         <button class="btn btn-danger" id="btnStopAndReport" type="button" onclick="manualVoiceStopAndReport()" title="立即停止相机录制并生成本次咖啡报告">⏹️ 停止录制并生成报告</button>
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="btn" type="button" onclick="triggerVoiceWakeStart()">🔴 语音唤醒开始录制</button>
+        <button class="btn" type="button" onclick="triggerVoiceWakeStart()">🔴 远程唤醒开始录制</button>
         <button class="btn" type="button" onclick="triggerQuickDemo('complete')">✨ 模拟完整意式录制</button>
         <button class="btn btn-danger" type="button" onclick="triggerQuickDemo('incomplete')">⚠️ 模拟缺参数录制(测试手机提醒)</button>
       </div>
