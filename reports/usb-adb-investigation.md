@@ -1042,3 +1042,78 @@ sizes and seek times matched the table above. No brew record was created.
 The pulled MP4 and generated JPEGs are local caches under `data/media_cache/`
 and `data/keyframes/`. The verification details are tracked here; the media
 files are ignored by Git.
+
+## 2026-11-18 Mac cold-boot recovery watcher
+
+The server now checks Pocket 4 Pro every ten seconds when idle. A verified
+heartbeat at most 20 seconds old suppresses hardware commands. On a stale or
+missing heartbeat, it checks the configured USB ADB serial and starts the
+installed `/data/pocket-coffee/pocket_sta_agent.sh` if needed. Without USB, it
+tries an existing LAN ADB listener at the last verified or explicitly configured
+address. It checks the camera's interface MAC before running the agent and does
+not enable TCP ADB. If that path is unavailable, the watcher tries Bluetooth,
+then looks for the existing LAN listener again. Neither a process launch nor a
+Bluetooth join acknowledgment counts as recovery; a new verified heartbeat does.
+
+`GET /api/camera/sta` includes `auto_recovery` with watcher state, heartbeat
+age, and the last transport and Bluetooth results. `POST /api/camera/auto_recover`
+returns HTTP 202 and schedules an immediate check under the same stale-heartbeat
+rule. Neither endpoint returns Wi-Fi credentials.
+
+**Boot integrity.** This camera returned `ro.boot.slot_suffix=2`,
+`ro.boot.verity=0`, and `ro.boot.veritymode=enforcing`. The current `/system`
+mount is read-only ext4 directly on `/dev/block/sdc19` (`system_2`), and
+`/sys/class/block/sdc19/ro` is `1`. There was no active system device-mapper
+volume or separate visible `vbmeta` partition, but those observations do not
+rule out vendor checks on the next boot. `product_config.sh` calls
+`/system/bin/debug.sh` and that file is absent. The inspected init and product
+scripts yielded no confirmed executable hook under `/data`. No block flags,
+mounts, init files, or firmware were changed.
+
+**Live USB and LAN.** On the stale-heartbeat test, the watcher started the
+installed script over USB and a fresh heartbeat arrived from `192.168.5.93`.
+A second test stopped only the agent (PID `22009`) and sent no manual recovery
+request. The timer started PID `22783` at 13:02 CST, and the API showed a fresh
+heartbeat with `last_check.transport=usb` and `status=started`. The separate
+LAN check reached the same camera's existing listener at `192.168.5.93:5555`
+and matched its WLAN MAC. A subsequent test stopped PID `22783` via LAN ADB
+and restarted the script via that same Wi-Fi transport, with no USB shell
+command. PID `25298` reported a new verified heartbeat at 13:06:52 CST. The
+cable was still connected; the availability of that listener after a USB-free
+cold boot has not been established.
+
+**Live Bluetooth.** Using the project's Bleak environment, the Mac found
+`OsmoPocket4P-4FB5` on service `FFF0`, connected, subscribed, armed `FFF4`
+with `01 00`, and sent the app pairing command via `FFF5`. The camera
+returned `07:45 00 02` (requires screen confirmation), followed by
+`07:46 02` (no approval). The code stops there unless pairing is approved.
+No Wi-Fi password or STA join command was sent in those live probes.
+The `07:48 01` STA switch and `07:47` join-with-credentials frames were
+tested in software, using the
+[OpenPocketCine BLE protocol](https://opencapture.org/openpocketcine/docs/protocol/ble/)
+and its documented ten-second interval between mode switch and join.
+During the pairing probes the camera briefly used `192.168.2.1`; the
+existing USB agent and a renewed DHCP lease restored `192.168.5.93`.
+A join acknowledgment alone would not start the custom agent. Full recovery
+also needs a reachable ADB listener and a new heartbeat. No physical,
+unplugged power cycle or unattended cold boot was verified.
+
+**Mac deployment.** Install the optional BLE dependencies with
+`python -m pip install -r daemon/requirements-ble.txt` into the same Python
+environment that runs `server/app.py`. The local server is running in a
+detached process on port 8788 from
+`~/Library/Application Support/Pocket Coffee Log/runtime`; its log is
+`~/Library/Logs/pocket-coffee-log.log`. A detached scan in the same Mac
+session found the camera. A login agent plist was installed and tested as
+a fallback for USB/LAN. macOS denied BLE to its bare Python process and
+blocked execution from Documents, so the login agent points to the same
+Application Support copy. Bluetooth access after a Mac logout or restart
+remains unverified; run from a Mac session that has Bluetooth access.
+
+Optional machine-local keys in `data/camera_sta_config.json`, under
+`auto_recovery`: `ble_name` (defaults to the exact observed device name),
+`ble_identifier` and `ble_pin` (if locally required), and `lan_ip` plus
+`lan_macs` when a DHCP reservation or an additional verified interface MAC
+is known. Wi-Fi credentials come from the existing `sta_network` settings.
+
+Validation: all 58 tests passed with `make test`; `git diff --check` passed.

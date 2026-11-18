@@ -41,6 +41,20 @@ class TestCameraHeartbeat(unittest.TestCase):
         return dict(device_id='pocket4p', ip='192.168.5.122', mac_address='88:22:33:77:33:99',
                     ssid='Home_Coffee_LAN', wifi_mode='STA', agent_version='v3-hg224')
 
+    def test_auto_recover_post_requests_check_without_waiting_for_hardware(self):
+        with patch.object(self.bridge, 'ensure_sta_agent_over_usb',
+                          return_value={'ok': True, 'status': 'already_running'}):
+            self.assertEqual(self.request('POST', '/api/camera/auto_recover')[0], 503)
+            self.bridge.start_auto_recovery()
+            try:
+                code, result = self.request('POST', '/api/camera/auto_recover')
+                self.assertEqual(code, 202)
+                self.assertTrue(result['auto_recovery']['watcher_running'])
+                self.assertEqual(result['auto_recovery']['stale_after_s'], 20)
+            finally:
+                self.bridge.stop_auto_recovery()
+                self.bridge._recovery_thread.join(2)
+
     def test_heartbeat_persists_observation_and_status_without_credentials(self):
         status, result = self.request('POST', '/api/camera/heartbeat', self.payload())
         self.assertEqual(status, 200)

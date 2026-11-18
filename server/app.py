@@ -3,7 +3,8 @@ Pocket Coffee Log HTTP API & Web Server.
 
 Provides REST endpoints for:
 - `/api/state`: Full dashboard state (coffee records, active voice session, camera STA nodes, notification logs)
-- `/api/camera/sta`: Verified camera STA state and network configuration
+- `/api/camera/sta`: Verified camera STA and automatic recovery status
+- `/api/camera/auto_recover`: Request an immediate stale-heartbeat check
 - `/api/camera/media`: Latest camera media info & `:8088` remote DCIM file listing
 - `/api/camera/pull_media`: Pull latest `.MP4` from camera `:8088` and extract 4-stage keyframes
 - `/api/camera/gimbal`: Move Pocket 3 / Pocket 4 Pro gimbal between OsmoDesk brew presets (`P0`–`P4`)
@@ -364,6 +365,8 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
         if path == "/api/state":
             records = [r.to_dict() for r in store.list_records()]
             cam_state = camera_bridge.load_state()
+            cam_state["sta_network"].pop("password", None)
+            cam_state.pop("auto_recovery", None)
             with open(camera_bridge.script_export_path, "r", encoding="utf-8") as f:
                 agent_script = f.read()
             self._send_json({
@@ -432,6 +435,12 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         body = self._read_json_body()
+
+        if path == "/api/camera/auto_recover":
+            accepted = camera_bridge.request_auto_recovery()
+            self._send_json({"ok": accepted, "auto_recovery": camera_bridge.recovery_status()},
+                            status=202 if accepted else 503)
+            return
 
         if path == "/api/camera/heartbeat":
             result = camera_bridge.record_heartbeat(body, self.client_address[0])
@@ -684,7 +693,12 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
 def run_server(host: str = "0.0.0.0", port: int = 8788) -> None:
     server = HTTPServer((host, port), CoffeeRequestHandler)
     print(f"☕️ Pocket Coffee Log Server listening on http://{host}:{port}")
-    server.serve_forever()
+    camera_bridge.start_auto_recovery()
+    try:
+        server.serve_forever()
+    finally:
+        camera_bridge.stop_auto_recovery()
+        server.server_close()
 
 
 if __name__ == "__main__":

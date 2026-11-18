@@ -1,0 +1,6 @@
+bleak>=1.1,<2
+# Python 3.9 wheels for the macOS Command Line Tools interpreter.
+pyobjc-core==11.1; sys_platform == "darwin" and python_version == "3.9"
+pyobjc-framework-Cocoa==11.1; sys_platform == "darwin" and python_version == "3.9"
+pyobjc-framework-CoreBluetooth==11.1; sys_platform == "darwin" and python_version == "3.9"
+pyobjc-framework-libdispatch==11.1; sys_platform == "darwin" and python_version == "3.9"

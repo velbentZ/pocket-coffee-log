@@ -25,6 +25,73 @@ class CameraSTABridgeTests(unittest.TestCase):
         state['cameras']['pocket4p']['lan_ip'] = '192.168.5.93'
         self.bridge.save_state(state)
 
+    def test_auto_recovery_skips_fresh_heartbeat(self):
+        with patch.object(self.bridge, 'ensure_sta_agent_over_usb') as usb:
+            self.bridge.record_heartbeat(dict(device_id='pocket4p', ip='192.168.5.93',
+                mac_address='88:22:33:77:33:99', wifi_mode='STA'), '192.168.5.93')
+            self.assertEqual(self.bridge.recover_camera_once()['status'], 'healthy')
+            usb.assert_not_called()
+
+    def test_auto_recovery_restarts_stale_agent_over_usb(self):
+        self.bridge.record_heartbeat(dict(device_id='pocket4p', ip='192.168.5.93',
+            mac_address='88:22:33:77:33:99', wifi_mode='STA'), '192.168.5.93')
+        state = self.bridge.load_state()
+        state['cameras']['pocket4p']['last_heartbeat'] = (
+            datetime.now(timezone.utc) - timedelta(seconds=21)).isoformat()
+        self.bridge.save_state(state)
+        with patch.object(self.bridge, 'ensure_sta_agent_over_usb',
+                          return_value={'ok': True, 'status': 'started'}), \
+             patch.object(self.bridge, 'ensure_sta_agent_over_lan') as lan:
+            result = self.bridge.recover_camera_once()
+        self.assertEqual((result['transport'], result['status']), ('usb', 'started'))
+        self.assertFalse(result['heartbeat_fresh'])
+        self.assertEqual(self.bridge.sta_status()['auto_recovery']['status'], 'started')
+        lan.assert_not_called()
+
+    def test_auto_recovery_uses_ble_then_tries_agent_over_lan(self):
+        with patch.object(self.bridge, 'ensure_sta_agent_over_usb',
+                          return_value={'ok': False, 'status': 'usb_unavailable'}), \
+             patch.object(self.bridge, 'ensure_sta_agent_over_lan',
+                          side_effect=[{'ok': False, 'status': 'lan_adb_unavailable'},
+                                       {'ok': True, 'status': 'started'}]) as lan, \
+             patch('daemon.camera_auto_recovery.provision_over_ble',
+                   return_value='sta_join_acknowledged'):
+            result = self.bridge.recover_camera_once()
+        self.assertEqual(lan.call_count, 2)
+        self.assertEqual((result['transport'], result['status']), ('ble', 'started'))
+        self.assertEqual(result['ble_status'], 'sta_join_acknowledged')
+        self.assertFalse(result['heartbeat_fresh'])
+
+    def test_auto_recovery_waits_for_dhcp_before_retrying_ble(self):
+        with patch.object(self.bridge, 'ensure_sta_agent_over_usb',
+                          return_value={'ok': False, 'status': 'usb_unavailable'}), \
+             patch.object(self.bridge, 'ensure_sta_agent_over_lan',
+                          return_value={'ok': False, 'status': 'lan_adb_unavailable'}), \
+             patch('daemon.camera_auto_recovery.provision_over_ble',
+                   return_value='sta_join_acknowledged') as ble:
+            self.assertEqual(self.bridge.recover_camera_once()['status'], 'waiting_for_lan')
+            self.assertEqual(self.bridge.recover_camera_once()['status'], 'waiting_for_lan')
+        ble.assert_called_once()
+        recovery = self.bridge.sta_status()['auto_recovery']
+        self.assertEqual(recovery['last_ble_attempt']['status'], 'sta_join_acknowledged')
+        self.assertFalse(recovery['heartbeat_fresh'])
+
+    def test_ble_station_packet_payloads(self):
+        from daemon import camera_auto_recovery as recovery
+        pairing = recovery.build_ble_pairing_packet('client', 'osmo', 0x1234)
+        mode = recovery.build_ble_sta_mode_packet(0x1235)
+        join = recovery.build_ble_sta_join_packet('咖啡', 'password', 0x1236)
+        for frame, seq, command in ((pairing, 0x34, 0x45), (mode, 0x35, 0x48),
+                                    (join, 0x36, 0x47)):
+            self.assertEqual(frame[4:11], bytes((2, 7, seq, 0x12, 0x40, 7, command)))
+            self.assertEqual(int.from_bytes(frame[1:3], 'little') & 0x3ff, len(frame))
+            self.assertEqual(int.from_bytes(frame[-2:], 'little'), camera_sta_bridge.crc16_dji(frame[:-2]))
+        self.assertEqual(pairing[11:-2], b'\x06client\x04osmo')
+        self.assertEqual(mode[11:-2], b'\x01')
+        self.assertEqual(join[11:-2], b'\x06' + '咖啡'.encode() + b'\x08password')
+        with self.assertRaises(ValueError):
+            recovery.build_ble_sta_join_packet('咖' * 11, 'password', 1)
+
     def test_heartbeat_retains_optional_telemetry(self):
         payload = dict(device_id='pocket4p', ip='192.168.5.93',
                        mac_address='88:22:33:77:33:99', wifi_mode='STA',

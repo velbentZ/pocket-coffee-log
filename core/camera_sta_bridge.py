@@ -15,6 +15,7 @@ import os
 import socket
 import struct
 import subprocess
+import threading
 import time
 import tempfile
 from email.utils import parsedate_to_datetime
@@ -363,6 +364,14 @@ class CameraInternalBridge:
         self.config_path = os.path.join(data_dir, "camera_sta_config.json")
         self.script_export_path = os.path.join(data_dir, "pocket_sta_agent.sh")
         self._ensure_default_config()
+        self._recovery_lock = threading.Lock()
+        self._recovery_wake = threading.Event()
+        self._recovery_stop = threading.Event()
+        self._recovery_thread = None
+        self._recovery_last = {}
+        self._recovery_last_ble = None
+        self._recovery_in_progress = False
+        self._next_ble_attempt = 0.0
 
     def _ensure_default_config(self) -> None:
         os.makedirs(self.data_dir, exist_ok=True)
@@ -397,8 +406,15 @@ class CameraInternalBridge:
             return json.load(f)
 
     def save_state(self, state: Dict[str, Any]) -> None:
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        # The watcher reads while the HTTP handler writes heartbeats.
+        fd, temporary = tempfile.mkstemp(prefix=".camera-sta-", dir=self.data_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            os.replace(temporary, self.config_path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def record_heartbeat(self, payload: Dict[str, Any], source_ip: str) -> Dict[str, Any]:
         """Record agent observations; verify STA only for a matching LAN peer."""
@@ -449,7 +465,8 @@ class CameraInternalBridge:
     def sta_status(self) -> Dict[str, Any]:
         state = self.load_state()
         state["sta_network"].pop("password", None)
-        return {"ok": True, "sta_network": state["sta_network"], "cameras": state["cameras"]}
+        return {"ok": True, "sta_network": state["sta_network"], "cameras": state["cameras"],
+                "auto_recovery": self.recovery_status(state)}
 
     def scan_usb_and_serial_devices(self) -> Dict[str, Any]:
         """
@@ -671,18 +688,164 @@ class CameraInternalBridge:
         if not transport["ok"] or transport.get("transport") != "usb":
             return {"ok": False, "status": "usb_unavailable",
                     "error": transport.get("error") or "Live USB ADB is required"}
-        serial = transport["serial"]
         command = ("" if restart_if_stopped else "check_only=1\n") + _ADB_ENSURE_STA_AGENT
+        return {**self._run_sta_agent(transport["argv"], command), "serial": transport["serial"]}
+
+    @staticmethod
+    def _run_sta_agent(argv, command):
         try:
-            proc = subprocess.run(transport["argv"] + ["shell", command],
-                                  capture_output=True, text=True, timeout=10)
+            proc = subprocess.run(argv + ["shell", command], capture_output=True, text=True, timeout=10)
             status = proc.stdout.strip()
             if proc.returncode == 0 and status in ("already_running", "started", "not_installed", "not_running"):
-                return {"ok": status in ("already_running", "started"), "status": status, "serial": serial}
+                return {"ok": status in ("already_running", "started"), "status": status}
             error = proc.stderr.strip() or status or "No agent process confirmed"
         except (OSError, subprocess.TimeoutExpired) as exc:
             error = str(exc)
-        return {"ok": False, "status": "start_unconfirmed", "serial": serial, "error": error}
+        return {"ok": False, "status": "start_unconfirmed", "error": error}
+
+    @staticmethod
+    def _heartbeat_age(state, now):
+        camera = state.get("cameras", {}).get("pocket4p", {})
+        if not camera.get("verification", {}).get("heartbeat_verified"):
+            return None
+        try:
+            age = (now - datetime.fromisoformat(camera["last_heartbeat"])).total_seconds()
+            return round(age, 3) if age >= 0 else None
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def recovery_status(self, state=None) -> Dict[str, Any]:
+        state = self.load_state() if state is None else state
+        age = self._heartbeat_age(state, datetime.now().astimezone())
+        fresh = age is not None and age <= 20
+        active = self._recovery_thread is not None and self._recovery_thread.is_alive()
+        last = self._recovery_last
+        return {"device_id": "pocket4p", "watcher_running": active, "interval_s": 10,
+                "stale_after_s": 20, "heartbeat_age_s": age, "heartbeat_fresh": fresh,
+                "status": ("healthy" if fresh else "checking" if self._recovery_in_progress
+                           else last.get("status", "waiting")),
+                "last_check": last or None, "last_ble_attempt": self._recovery_last_ble}
+
+    def ensure_sta_agent_over_lan(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Use the existing ADB listener on a known camera; never enable network ADB."""
+        camera = state.get("cameras", {}).get("pocket4p", {})
+        verified_ip = camera.get("verification", {}).get("verified_sta_ip")
+        recovery = state.get("auto_recovery", {})
+        candidates = (recovery.get("lan_ip"), verified_ip)
+        macs = recovery.get("lan_macs", [])
+        if not isinstance(macs, list):
+            macs = []
+        if verified_ip:
+            macs = [camera.get("mac_address"), *macs]
+        macs = sorted({mac.lower() for mac in macs if isinstance(mac, str)
+                       and re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac)})
+        unavailable = {"ok": False, "status": "lan_adb_unavailable"}
+        if not macs:
+            return unavailable
+        settings = state.get("adb", {})
+        binary = os.environ.get("POCKET_ADB", settings.get("binary", "adb"))
+        try:
+            network = ipaddress.IPv4Network(state["sta_network"]["subnet"])
+            port = int(camera.get("adb_port", 5555))
+            server_port = int(os.environ.get("POCKET_ADB_PORT", settings.get("server_port", 5037)))
+            if not 1 <= port <= 65535 or not 1 <= server_port <= 65535:
+                return unavailable
+            base = [binary, "-P", str(server_port)]
+            for ip in dict.fromkeys(value for value in candidates if isinstance(value, str) and value):
+                try:
+                    address = ipaddress.IPv4Address(ip)
+                    if address not in network or address in (network.network_address, network.broadcast_address):
+                        continue
+                    with socket.create_connection((str(address), port), timeout=1):
+                        pass
+                    target = f"{address}:{port}"
+                    subprocess.run(base + ["connect", target], capture_output=True, text=True, timeout=5)
+                    # A DHCP address may change hands. Match a known MAC before
+                    # invoking the installed agent on the selected connection.
+                    allowed = "|".join(macs)
+                    check = ('case "$(cat /sys/class/net/wlan0/address 2>/dev/null)" in '
+                             f'{allowed}) ;; *) exit 42 ;; esac\n')
+                    result = self._run_sta_agent(base + ["-s", target], check + _ADB_ENSURE_STA_AGENT)
+                    if result["status"] != "start_unconfirmed":
+                        return result
+                except (ValueError, OSError, subprocess.TimeoutExpired):
+                    continue
+            return unavailable
+        except (KeyError, ValueError, TypeError):
+            return unavailable
+
+    def recover_camera_once(self, *, now=None) -> Dict[str, Any]:
+        """Check one transport at a time, keeping the HTTP server responsive."""
+        from daemon.camera_auto_recovery import BLERecoveryError, provision_over_ble
+
+        if not self._recovery_lock.acquire(blocking=False):
+            return {"status": "checking"}
+        self._recovery_in_progress = True
+        try:
+            now = now or datetime.now().astimezone()
+            state = self.load_state()
+            age = self._heartbeat_age(state, now)
+            fresh = age is not None and age <= 20
+            if fresh:
+                return {"status": "healthy", "heartbeat_fresh": True}
+            result = {"checked_at": now.isoformat(), "heartbeat_fresh": False}
+            usb = self.ensure_sta_agent_over_usb("pocket4p")
+            if usb["status"] != "usb_unavailable":
+                result.update(transport="usb", status=usb["status"])
+            else:
+                lan = self.ensure_sta_agent_over_lan(state)
+                if lan["status"] != "lan_adb_unavailable":
+                    result.update(transport="lan_adb", status=lan["status"])
+                elif time.monotonic() < self._next_ble_attempt:
+                    result.update(transport="ble", status="waiting_for_lan")
+                else:
+                    result["transport"] = "ble"
+                    try:
+                        result["ble_status"] = provision_over_ble(
+                            state.get("auto_recovery", {}), state["sta_network"])
+                    except BLERecoveryError as error:
+                        result["status"] = str(error)
+                        self._recovery_last_ble = {"status": str(error), "checked_at": now.isoformat()}
+                    else:
+                        self._recovery_last_ble = {"status": result["ble_status"], "checked_at": now.isoformat()}
+                        self._next_ble_attempt = time.monotonic() + 60
+                        lan = self.ensure_sta_agent_over_lan(state)
+                        result["status"] = ("waiting_for_lan" if lan["status"] == "lan_adb_unavailable"
+                                            else lan["status"])
+            self._recovery_last = result
+            return result
+        finally:
+            self._recovery_in_progress = False
+            self._recovery_lock.release()
+
+    def _watch_camera_recovery(self) -> None:
+        while not self._recovery_stop.is_set():
+            self._recovery_wake.clear()
+            try:
+                self.recover_camera_once()
+            except Exception as error:
+                self._recovery_last = {"status": "watcher_error", "error_type": type(error).__name__,
+                                       "checked_at": datetime.now().astimezone().isoformat()}
+            self._recovery_wake.wait(10)
+
+    def start_auto_recovery(self) -> None:
+        if self._recovery_thread is not None and self._recovery_thread.is_alive():
+            return
+        self._recovery_stop.clear()
+        self._recovery_thread = threading.Thread(target=self._watch_camera_recovery,
+                                                 name="camera-auto-recovery", daemon=True)
+        self._recovery_thread.start()
+
+    def stop_auto_recovery(self) -> None:
+        self._recovery_stop.set()
+        self._recovery_wake.set()
+
+    def request_auto_recovery(self) -> bool:
+        if self._recovery_thread is None or not self._recovery_thread.is_alive():
+            return False
+        if not self._recovery_in_progress:
+            self._recovery_wake.set()
+        return True
 
     def auto_provision_if_usb_connected(self) -> Dict[str, Any]:
         """Recover an installed Pocket 4 Pro agent over USB, or try legacy STA provisioning."""
