@@ -91,6 +91,29 @@ class CameraVoiceTests(unittest.TestCase):
         self.manager.notifier.notify_brew_record.assert_called_once()
         self.bridge.trigger_lan_recording.assert_not_called()
 
+    def test_wake_only_live_session_pulls_video_and_passes_audio_timing(self):
+        self.assertEqual(self.say("开始录像")["command"], "start")
+        self.assertEqual(self.say("停止录像", True)["command"], "stop")
+        clip_name = "DJI_20261118174915_0044_D.MP4"
+        local = Path(self.store.data_dir, clip_name)
+        local.touch()
+        segments = [{"text": "豆子称重18克", "timestamp_s": 5, "duration_s": 1}]
+        with patch.object(self.bridge, "pull_latest_media",
+                          return_value={"ok": True, "local_path": str(local)}) as pull, \
+                patch.object(self.manager.vision_engine, "extract_audio_and_transcribe_segments",
+                             return_value=("豆子称重18克", segments)) as asr, \
+                patch.object(self.manager.vision_engine, "analyze_video_keyframes",
+                             wraps=self.manager.vision_engine.analyze_video_keyframes) as analyze:
+            result = self.manager.stop_and_process(media_finalized=True,
+                media_url=f"http://192.168.5.94:8088/{clip_name}")
+        pull.assert_called_once_with(device_id="pocket4p", filename=clip_name)
+        asr.assert_called_once_with(str(local))
+        self.assertEqual(result["record"]["bean_weight_g"], 18)
+        self.assertEqual(analyze.call_args.kwargs["speech_segments"], segments)
+        self.assertIn("开始录像", analyze.call_args.kwargs["spoken_transcript"])
+        self.assertTrue(any(event["text"] == "停止录像"
+                            for event in analyze.call_args.kwargs["utterance_events"]))
+
     def test_stop_when_only_camera_knows_it_is_recording(self):
         self.assertEqual(self.say("停止录象", True)["command"], "stop")
 

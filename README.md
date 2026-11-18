@@ -15,10 +15,10 @@
      - 在相机内启动 `/sbin/busybox httpd -p 8088 -h /mnt/media_rw/emulated/DCIM`，局域网可直接通过 `http://192.168.5.93:8088/DJI_001/...` 高速预览与拉取 `.MP4` 原片（`GET /api/camera/media`）；
      - 守护进程周期性通过 BusyBox `nc` 向宿主机发送真实源 IP 心跳 `POST /api/camera/heartbeat`（目标 `http://192.168.5.84:8788`），服务端严格核验请求源 IP 与上报 STA IP 一致性，并支持录制完成自动触发 `POST /api/camera/webhook`。
 
-2. **🎙️ 零人工干预 · 语音唤醒开录、OsmoDesk 云台自动跟拍 & 多模态 FFmpeg + VLM 关键帧恢复 (`daemon/voice_session.py`, `core/multimodal_vision.py`)**
+2. **🎙️ 零人工干预 · 语音唤醒开录、OsmoDesk 云台自动跟拍 & 语音感知选帧与本地 OCR 恢复 (`daemon/voice_session.py`, `core/multimodal_vision.py`)**
    - 当检测到唤醒词 **「我要开始制作咖啡」** 或 **「开始做咖啡」** 时，立即触发相机录制并采集多轮口述语音（支持口误自我修正与无损上下文压缩 `SessionContextCompactor`）；
    - **🎯 OsmoDesk 云台机位预设联动 (`POST /api/camera/gimbal`)**：内置 `P0 回中 (reset_center)`、`P1 电子秤称豆 (scale_dose)`、`P2 磨豆刻度 (grinder_dial)`、`P3 压力表油脂 (espresso_gauge)`、`P4 出杯读秒 (final_cup)` 五组云台预设；在口述过程检测到「称豆 / 磨豆刻度 / 萃取压力 / 出液完成」等阶段词时自动驱动相机云台跟随动作；
-   - **⬇️ 无线拉取 MP4、4 阶段关键帧自动挂载 & VLM 视觉补全 (`POST /api/camera/pull_media`, `analyze_video_keyframes`)**：拉取接口默认选择最新视频，也可用 `filename` 指定相机列表中的文件。配合 `ffmpeg` 与 `ffprobe`，在 **15% 称豆 / 35% 磨豆刻度 / 70% 压力表油脂 / 90% 出杯读秒** 四个萃取节点抽取 JPEG 缩略关键帧。冲煮报告把关键帧与 `:8088` 视频流 `media_url` 写入 `CoffeeRecord`；配置 `GEMINI_API_KEY` 或 `OPENAI_API_KEY` 时可调用多模态 VLM 恢复语音漏说的克重、刻度、压力与液重（溯源标记 `source="video_frame_ocr"`）。
+   - **⬇️ 无线拉取 MP4、智能选帧与视觉补全**：拉取接口默认选择最新视频，也可用 `filename` 指定文件。弱语音或静音会尝试从原片提取音轨转录；按实际语音时间或冲煮阶段窗口，在称豆、磨豆、压力和出杯各比较最多 4 个候选。macOS 优先使用 AVFoundation 和 Apple Vision，按画面清晰度、曝光及 OCR 文本选帧；FFmpeg 可作为抽帧后备。无需 API 密钥即可从清楚的读数补全克重、刻度、压力与读秒；配置 `GEMINI_API_KEY` 或 `OPENAI_API_KEY` 时，VLM 读数优先于本地 OCR。报告保留实际选帧时间与原片链接。
 
 3. **🫘 Beanconqueror 风格豆仓余量、赏味期生命周期 & AI 豆袋标签一键入库 (`core/bean_equipment_store.py`)**
    - **库存扣减与赏味期追踪 (`deduct_bean_dose`)**：为每袋咖啡豆维护 `roast_date`、`initial_weight_g`、`remaining_weight_g`、`bag_status` (`active` / `frozen` / `finished`) 与累计冲煮次数 `brew_count`；每次完成制作后自动扣减豆重并计算烘焙天数 `days_off_roast` 与状态（0–4 天 `养豆期 (Degassing)`、5–28 天 `黄金赏味期 (Peak Window)`、>28 天 `风味衰退期 (Aging)`）；

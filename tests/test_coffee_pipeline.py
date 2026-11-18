@@ -90,6 +90,8 @@ class TestMultimodalVisionKeyframes(unittest.TestCase):
                 [12.0, 28.0, 56.0, 72.0],
             )
             for kf in meta["keyframes"]:
+                self.assertEqual(kf["candidates_evaluated"], 4)
+                self.assertEqual(kf["selection_method"], "smart_window+vision_score")
                 self.assertTrue(kf["extracted"])
                 self.assertTrue(os.path.isfile(kf["image_path"]))
 
@@ -166,6 +168,7 @@ class TestCoffeeServerAndComparisonPipeline(unittest.TestCase):
             patch.object(app, "vision_engine", self.vision_engine),
             patch.object(app, "voice_manager", self.voice_manager),
             patch("usb.core.find", return_value=None),
+            patch.object(self.camera_bridge, "pull_latest_media", return_value={"ok": False}),
         ]
         for p in self.patches:
             p.start()
@@ -273,7 +276,7 @@ class TestCoffeeServerAndComparisonPipeline(unittest.TestCase):
             "开始录像 今天用的是埃塞花魁日晒浅冲18.5克独立磨豆机尼斯刻度14.5意识浓缩酒八萃取28秒初夜37课 停止录像"
         )
         with patch.object(self.camera_bridge, "pull_latest_media", side_effect=fake_pull_latest_media) as pull_mock, patch.object(
-            self.voice_manager.vision_engine, "extract_audio_and_transcribe", return_value=spoken_on_camera
+            self.voice_manager.vision_engine, "extract_audio_and_transcribe_segments", return_value=(spoken_on_camera, [])
         ) as asr_mock:
             status, webhook_res = self.request_json(
                 "POST",
@@ -289,7 +292,7 @@ class TestCoffeeServerAndComparisonPipeline(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(webhook_res["ok"])
         pull_mock.assert_called_once()
-        asr_mock.assert_called_once_with(local_cached, fallback_transcript="")
+        asr_mock.assert_called_once_with(local_cached)
         rec = webhook_res["record"]
         self.assertEqual(rec["bean_weight_g"], 18.5)
         self.assertEqual(rec["grinder_model"], "Niche Zero")
@@ -508,6 +511,9 @@ class TestCoffeeServerAndComparisonPipeline(unittest.TestCase):
         ]
         with patch.object(
             self.camera_bridge, "list_remote_media", return_value={"ok": True, "files": files}
+        ), patch.object(
+            self.camera_bridge, "pull_latest_media",
+            wraps=CameraInternalBridge.pull_latest_media.__get__(self.camera_bridge),
         ), patch("core.camera_sta_bridge.urllib_request.urlopen", return_value=BytesIO(contents)):
             status, result = self.request_json(
                 "POST", "/api/camera/pull_media",

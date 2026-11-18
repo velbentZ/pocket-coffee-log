@@ -6,7 +6,7 @@ utterances and self-corrections are compacted losslessly without losing provenan
 revision history.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import re
 from threading import RLock
@@ -70,6 +70,28 @@ def _normalize_command(text: str) -> str:
     ):
         text = text.replace(variant, canonical)
     return text
+
+
+def _has_meaningful_brewing_speech(text: str) -> bool:
+    normalized = _normalize_command(text)
+    commands = sorted({_normalize_command(word) for word in WAKE_KEYWORDS + STOP_KEYWORDS},
+                      key=len, reverse=True)
+    return bool(re.sub("|".join(map(re.escape, commands)), "", normalized).strip())
+
+
+def _with_session_time(event: Dict[str, Any], started_at: Optional[str]) -> Dict[str, Any]:
+    """Convert legacy wall-clock events to video offsets, including midnight rollover."""
+    if not started_at or event.get("timestamp_s") is not None:
+        return event
+    try:
+        start = datetime.fromisoformat(started_at)
+        time = datetime.strptime(event["timestamp"], "%H:%M:%S").time()
+    except (ValueError, TypeError, KeyError):
+        return event
+    spoken_at = datetime.combine(start.date(), time)
+    if (start - spoken_at).total_seconds() > 12 * 3600:
+        spoken_at += timedelta(days=1)
+    return {**event, "timestamp_s": (spoken_at - start).total_seconds()}
 
 
 def _serialized(method):
@@ -157,6 +179,12 @@ class VoiceWakeupSessionManager:
             return "none"
         recording = session["state"] == "recording" or recording_active
         if recording and self.matches_stop_word(transcript):
+            if session.get("started_at"):
+                session.setdefault("utterance_events", []).append(
+                    self._make_utterance_event(transcript, "camera_mic", datetime.now())
+                )
+                if _has_meaningful_brewing_speech(transcript):
+                    session["transcript_chunks"].append(transcript)
             session.update(state="awaiting_media", camera_id=camera_id, last_event="等待相机完成视频文件")
             return "stop"
         if session["state"] == "standby_listening" and not recording and self.matches_wake_word(transcript):
@@ -181,12 +209,13 @@ class VoiceWakeupSessionManager:
         shutter_res = ({} if trigger_source == "camera_mic" else
                        self.camera_bridge.trigger_lan_recording(camera_id, action="start"))
         gimbal_res = self._follow_gimbal_stage(camera_id, initial_phrase)
-        now_str = datetime.now().strftime("%H:%M:%S")
-        sess_id = f"sess-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        now = datetime.now()
+        now_str = now.strftime("%H:%M:%S")
+        sess_id = f"sess-{now.strftime('%Y%m%d-%H%M%S')}"
 
         utterances = []
         if initial_phrase:
-            utterances.append({"text": initial_phrase, "source": trigger_source, "timestamp": now_str})
+            utterances.append({"text": initial_phrase, "source": trigger_source, "timestamp": now_str, "timestamp_s": 0.0})
 
         compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
 
@@ -195,7 +224,7 @@ class VoiceWakeupSessionManager:
             "state": "recording",
             "camera_id": camera_id,
             "camera_model": model,
-            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": now.isoformat(sep=" "),
             "transcript_chunks": [initial_phrase] if initial_phrase else [],
             "utterance_events": utterances,
             "compacted_context": compacted.to_dict(),
@@ -208,6 +237,13 @@ class VoiceWakeupSessionManager:
         global_event_bus.publish("session.started", {"session_id": sess_id, "camera_id": camera_id})
         return self.active_session
 
+    def _make_utterance_event(self, text: str, source: str, now: datetime) -> Dict[str, Any]:
+        event = {"text": text, "source": source, "timestamp": now.strftime("%H:%M:%S")}
+        started_at = self.active_session.get("started_at")
+        if started_at:
+            event["timestamp_s"] = (now - datetime.fromisoformat(started_at)).total_seconds()
+        return event
+
     @_serialized
     def append_utterance(self, text: str, source: str = "voice_utterance") -> Dict[str, Any]:
         text = text.strip()
@@ -219,7 +255,7 @@ class VoiceWakeupSessionManager:
             self.start_session(self.active_session.get("camera_id", "pocket4p"), initial_phrase=text)
             gimbal_res = self.active_session.get("last_gimbal_result")
         else:
-            now_str = datetime.now().strftime("%H:%M:%S")
+            heard_at = datetime.now()
             cam_id = self.active_session.get("camera_id", "pocket4p")
             gimbal_res = self._follow_gimbal_stage(cam_id, text)
             if gimbal_res is not None or self.detect_gimbal_stage(text):
@@ -229,7 +265,7 @@ class VoiceWakeupSessionManager:
                 self.active_session["last_gimbal_result"] = gimbal_res
             self.active_session["transcript_chunks"].append(text)
             self.active_session.setdefault("utterance_events", []).append(
-                {"text": text, "source": source, "timestamp": now_str}
+                self._make_utterance_event(text, source, heard_at)
             )
             compacted = self.compactor.compact_utterances(
                 self.active_session.get("session_id", "sess-live"),
@@ -296,7 +332,7 @@ class VoiceWakeupSessionManager:
         )
         latest_file_name = (
             os.path.basename(cam_state.get("latest_media_file") or "")
-            or (os.path.basename(resolved_media_url) if resolved_media_url else "")
+            or (os.path.basename(urlsplit(resolved_media_url).path) if resolved_media_url else "")
             or f"DJI_{datetime.now().strftime('%Y%m%d_%H%M%S')}.MP4"
         )
         default_camera_path = f"/mnt/media_rw/emulated/DCIM/DJI_001/{latest_file_name}"
@@ -325,46 +361,63 @@ class VoiceWakeupSessionManager:
 
         local_analysis_video_file = video_file
         if not os.path.isfile(local_analysis_video_file) and resolved_media_url:
-            cached_candidate = os.path.join(self.store.data_dir, "media_cache", os.path.basename(resolved_media_url))
+            cached_candidate = os.path.join(self.store.data_dir, "media_cache", os.path.basename(urlsplit(resolved_media_url).path))
             if os.path.isfile(cached_candidate):
                 local_analysis_video_file = cached_candidate
-            elif ((media_finalized and override_transcript is None) or not full_transcript) and hasattr(self.camera_bridge, "pull_latest_media"):
+            elif hasattr(self.camera_bridge, "pull_latest_media"):
                 try:
                     pull_res = self.camera_bridge.pull_latest_media(
                         device_id=cam_id,
-                        filename=os.path.basename(resolved_media_url) or None,
+                        filename=os.path.basename(urlsplit(resolved_media_url).path) or None,
                     )
                     if isinstance(pull_res, dict) and pull_res.get("ok") and pull_res.get("local_path"):
                         local_analysis_video_file = str(pull_res["local_path"])
                 except Exception:
                     pass
 
-        if not full_transcript and os.path.isfile(local_analysis_video_file):
-            full_transcript = self.vision_engine.extract_audio_and_transcribe(
-                local_analysis_video_file, fallback_transcript=""
+        timed_events = [] if override_transcript is not None else [
+            _with_session_time(event, self.active_session.get("started_at")) for event in utterances
+        ]
+        speech_segments = []
+        compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
+        live_parameters = compacted.canonical_parameters
+        live_stages = [("bean_weight_g",), ("grind_setting", "grinder_model"),
+                       ("pressure_bar", "water_temp_c"), ("yield_g", "extraction_time_s")]
+        rich_live = (_has_meaningful_brewing_speech(full_transcript)
+                     and sum(any(live_parameters.get(k) is not None for k in group)
+                             for group in live_stages) >= 3)
+        has_local = os.path.isfile(local_analysis_video_file)
+        if override_transcript is None and has_local and not rich_live:
+            audio, speech_segments = self.vision_engine.extract_audio_and_transcribe_segments(
+                local_analysis_video_file
             )
-            if full_transcript:
-                utterances = [
-                    {
-                        "text": full_transcript,
-                        "source": "camera_video_audio",
-                        "timestamp": datetime.now().strftime("%H:%M:%S"),
-                    }
-                ]
+            if _has_meaningful_brewing_speech(audio) and _normalize_command(audio) not in _normalize_command(full_transcript):
+                # Keep live utterances last so explicit live corrections still win.
+                utterances = [{"text": audio, "source": "camera_video_audio",
+                               "timestamp": datetime.now().strftime("%H:%M:%S")}, *utterances]
+                audio_normalized = _normalize_command(audio)
+                extra_live = [event["text"] for event in utterances[1:]
+                              if _normalize_command(event["text"]) not in audio_normalized]
+                full_transcript = " ".join([audio, *extra_live])
+                compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
 
-        if not full_transcript and not media_finalized:
+        if (not full_transcript and override_transcript is None and not media_finalized
+                and not has_local and not resolved_media_url and not explicit_video_path):
             full_transcript = "我要开始制作咖啡。今天用的是埃塞俄比亚耶加雪菲水洗浅烘，豆子称重18克，独立磨豆机 Niche Zero 刻度 15，做意式浓缩，9 bar 萃取 28 秒，出液 36 克。"
             utterances = [{"text": full_transcript, "source": "voice_utterance", "timestamp": datetime.now().strftime("%H:%M:%S")}]
 
-        compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
+            compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
+
         spoken_canonical = dict(compacted.canonical_parameters)
 
         # 4. Run MultimodalVisionEngine keyframe inspection & match Personal Bean Library
         vision_analysis = self.vision_engine.analyze_video_keyframes(
-            video_path=local_analysis_video_file if (override_transcript is None and os.path.isfile(local_analysis_video_file)) else video_file,
+            video_path=local_analysis_video_file if has_local else video_file,
             spoken_transcript=full_transcript,
             camera_device=model,
             hint_overrides=hint_overrides,
+            utterance_events=timed_events,
+            speech_segments=speech_segments,
         )
         visual_fields: Dict[str, Any] = dict(vision_analysis.get("visual_fields") or {})
         visual_provenance = self.compactor.merge_visual_parameters(
