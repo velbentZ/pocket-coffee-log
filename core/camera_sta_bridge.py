@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 import json
 import ipaddress
+import math
 import re
 import os
 import socket
@@ -134,9 +135,64 @@ def build_camera_shutter_packet(start: bool = True, seq: int = 10) -> bytes:
     )
 
 
+GIMBAL_BREW_PRESETS = {
+    "scale_dose": {"label": "P1 · 电子秤称豆 & 豆袋特写",
+                   "pitch_deg": -25.0, "yaw_deg": -15.0, "duration_s": 1.2},
+    "grinder_dial": {"label": "P2 · 磨豆机刻度盘 & 落粉",
+                     "pitch_deg": -10.0, "yaw_deg": 20.0, "duration_s": 1.2},
+    "espresso_gauge": {"label": "P3 · 压力表 & 无底手柄萃取流态",
+                       "pitch_deg": -5.0, "yaw_deg": 0.0, "duration_s": 1.0},
+    "final_cup": {"label": "P4 · 出杯液重 & 读秒终点",
+                  "pitch_deg": -28.0, "yaw_deg": 0.0, "duration_s": 1.0},
+    "reset_center": {"label": "P0 · 云台回中位",
+                     "pitch_deg": 0.0, "yaw_deg": 0.0, "duration_s": 1.0},
+}
+
+
+def build_gimbal_angle_packet(
+    pitch_deg: float, roll_deg: float = 0.0, yaw_deg: float = 0.0,
+    duration_s: float = 1.0, seq: int = 20,
+) -> bytes:
+    """Encode absolute gimbal angles in signed tenths of a degree."""
+    values = (pitch_deg, roll_deg, yaw_deg, duration_s)
+    if not all(type(value) in (float, int) and
+               (type(value) is int or math.isfinite(value)) for value in values):
+        raise ValueError("Gimbal angles and duration must be finite numbers")
+    if not all(-3276.8 <= angle <= 3276.7 for angle in (pitch_deg, roll_deg, yaw_deg)):
+        raise ValueError("Gimbal angle outside the DUML encoding range")
+    if not 0 <= duration_s <= 25.5:
+        raise ValueError("Gimbal duration outside the DUML encoding range")
+    pitch, roll, yaw, duration = (round(value * 10) for value in values)
+    return build_duml_packet(
+        sender_type=2, sender_index=0, receiver_type=0x04, receiver_index=0,
+        cmd_set=0x04, cmd_id=0x14, payload=struct.pack("<hhhBB", pitch, roll, yaw, 0x07, duration),
+        seq=seq,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. On-Camera Internal Extension Daemon Script Generator
 # ---------------------------------------------------------------------------
+
+_ADB_ENSURE_STA_AGENT = r"""
+agent=/data/pocket-coffee/pocket_sta_agent.sh
+base="${agent%/*}"
+agent_running() {
+    pid=$(cat "$base/agent.pid" 2>/dev/null)
+    case "$pid" in ''|*[!0-9]*) return 1;; esac
+    [ -r "/proc/$pid/cmdline" ] &&
+        busybox tr '\000' '\n' < "/proc/$pid/cmdline" | busybox grep -Fxq "$agent"
+}
+if [ ! -f "$agent" ]; then echo not_installed; exit 0; fi
+if agent_running; then echo already_running; exit 0; fi
+busybox nohup /system/bin/sh "$agent" </dev/null >"$base/console.log" 2>&1 &
+for attempt in 1 2 3; do
+    sleep 1
+    if agent_running; then echo started; exit 0; fi
+done
+echo start_unconfirmed
+exit 1
+""".strip()
 
 ON_CAMERA_AGENT_SCRIPT = r"""#!/system/bin/sh
 # Verified on eagle4_hg224. Install in /data/pocket-coffee; firmware is read-only.
@@ -151,7 +207,12 @@ DCIM_DIR="${DCIM_DIR:-/mnt/media_rw/emulated/DCIM}"
 BB=/sbin/busybox
 mkdir -p "$BASE_DIR"
 PID_FILE="$BASE_DIR/agent.pid"
-if [ -r "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then exit 0; fi
+OLD_PID=$(cat "$PID_FILE" 2>/dev/null)
+case "$OLD_PID" in
+    ''|*[!0-9]*) ;;
+    *) if [ -r "/proc/$OLD_PID/cmdline" ] &&
+           "$BB" tr '\000' '\n' < "/proc/$OLD_PID/cmdline" | "$BB" grep -Fxq "$0"; then exit 0; fi ;;
+esac
 echo $$ > "$PID_FILE"
 trap 'rm -f "$PID_FILE"; exit' INT TERM EXIT
 log() { echo "$(date) $*" >> "$BASE_DIR/agent.log"; }
@@ -191,6 +252,15 @@ ensure_sta() {
 
 json_escape() { printf '%s' "$1" | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'; }
 newest_mp4() { "$BB" ls -1t "$DCIM_DIR"/DJI_001/*.MP4 2>/dev/null | "$BB" head -n 1; }
+battery_capacity() {
+    for SUPPLY in "${POWER_SUPPLY_DIR:-/sys/class/power_supply}"/*; do
+        [ -r "$SUPPLY/type" ] && [ -r "$SUPPLY/capacity" ] || continue
+        [ "$(cat "$SUPPLY/type")" = Battery ] || continue
+        CAPACITY=$("$BB" awk 'NR == 1 && /^[0-9]+$/ && $0 <= 100 {printf "%d", $0}' "$SUPPLY/capacity" 2>/dev/null)
+        if [ -n "$CAPACITY" ]; then printf '%s' "$CAPACITY"; return; fi
+    done
+    printf 'null'
+}
 post_json() {
     POST_PATH="$1"
     POST_BODY="$2"
@@ -200,15 +270,16 @@ post_json() {
 
 heartbeat() {
     MAC=$(cat /sys/class/net/wlan0/address)
+    BATTERY_PERCENT=$(battery_capacity)
     SD_FREE_GB=$("$BB" df -k /mnt/media_rw/emulated 2>/dev/null | "$BB" awk '/%/ && $(NF-2) ~ /^[0-9]+$/ {printf "%.3f", $(NF-2)/1048576; exit}')
     SD_FREE_GB="${SD_FREE_GB:-null}"
     LATEST_MP4=$(newest_mp4)
     LATEST_MEDIA_FILE="${LATEST_MP4##*/}"
     LATEST_MEDIA_URL=""
     [ -n "$LATEST_MEDIA_FILE" ] && LATEST_MEDIA_URL="http://$CURRENT_IP:8088/DJI_001/$LATEST_MEDIA_FILE"
-    BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v4-hg224-media\",\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
+    BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v5-hg224-telemetry\",\"battery_percent\":$BATTERY_PERCENT,\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
     if post_json /api/camera/heartbeat "$BODY"; then
-        log "heartbeat accepted ip=$CURRENT_IP sd_free_gb=$SD_FREE_GB latest_media_file=$LATEST_MEDIA_FILE"
+        log "heartbeat accepted ip=$CURRENT_IP battery_percent=$BATTERY_PERCENT sd_free_gb=$SD_FREE_GB latest_media_file=$LATEST_MEDIA_FILE"
     else
         log "heartbeat failed: $RESPONSE"
     fi
@@ -358,6 +429,14 @@ class CameraInternalBridge:
         for key in ("sd_free_gb", "latest_media_file", "latest_media_url"):
             if key in payload:
                 camera[key] = payload[key]
+        if verified:
+            battery = payload.get("battery_percent")
+            if "battery_percent" in payload and (
+                battery is None or (type(battery) is int and 0 <= battery <= 100)
+            ):
+                camera["battery_percent"] = battery
+            if payload.get("recording_state") in ("recording", "idle", "unknown"):
+                camera["recording_state"] = payload["recording_state"]
         camera.setdefault("verification", {}).update(
             checked_at=now, status="live_sta_heartbeat" if verified else "heartbeat_source_mismatch",
             heartbeat_verified=verified, sta_connection_verified=verified,
@@ -586,11 +665,28 @@ class CameraInternalBridge:
         }
 
     def auto_provision_if_usb_connected(self) -> Dict[str, Any]:
-        """
-        Checks if Pocket 3 or Pocket 4 Pro is connected via USB-C and automatically
-        dispatches the stored STA Wi-Fi credentials (`你的名字` / `nidemingzi`) over
-        USB Interface #4 (`EP 0x04`).
-        """
+        """Recover an installed Pocket 4 Pro agent over USB, or try legacy STA provisioning."""
+        transport = self.adb_transport("pocket4p")
+        if transport["ok"] and transport.get("transport") == "usb":
+            try:
+                proc = subprocess.run(transport["argv"] + ["shell", _ADB_ENSURE_STA_AGENT],
+                                      capture_output=True, text=True, timeout=10)
+                status = proc.stdout.strip()
+                if proc.returncode == 0 and status in ("already_running", "started", "not_installed"):
+                    agent_status = {"ok": status != "not_installed", "status": status}
+                else:
+                    agent_status = {"ok": False, "status": "start_unconfirmed",
+                                    "error": proc.stderr.strip() or status or "No agent process confirmed"}
+            except (OSError, subprocess.TimeoutExpired) as error:
+                agent_status = {"ok": False, "status": "start_unconfirmed", "error": str(error)}
+            return {
+                "usb_connected": True,
+                "auto_provisioned": False,
+                "camera_usb_info": {"connected": True, "serial_number": transport["serial"],
+                                    "product_name": "OsmoPocket4P"},
+                "agent_status": agent_status,
+            }
+
         state = self.load_state()
         net = state.get("sta_network", {})
         ssid = net.get("ssid", "你的名字")
@@ -778,6 +874,92 @@ class CameraInternalBridge:
         finally:
             if temporary and os.path.exists(temporary):
                 os.unlink(temporary)
+
+    def move_gimbal_preset(
+        self, device_id: str = "pocket4p", preset: str = "reset_center",
+        pitch_deg: Optional[float] = None, yaw_deg: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Dispatch a preset angle frame and report transport writes without assuming motion."""
+        state = self.load_state()
+        camera = state["cameras"].get(device_id)
+        if camera is None:
+            return {"ok": False, "error": f"Camera {device_id} not found"}
+        settings = GIMBAL_BREW_PRESETS.get(preset) if isinstance(preset, str) else None
+        if settings is None:
+            return {"ok": False, "error": f"Unknown gimbal preset: {preset}"}
+        pitch = settings["pitch_deg"] if pitch_deg is None else pitch_deg
+        yaw = settings["yaw_deg"] if yaw_deg is None else yaw_deg
+        try:
+            packet = build_gimbal_angle_packet(pitch, yaw_deg=yaw, duration_s=settings["duration_s"])
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+
+        usb_sent, udp_sent_to = False, None
+        usb_error, udp_error = None, None
+        try:
+            os.environ.setdefault("DYLD_LIBRARY_PATH", "/opt/homebrew/lib")
+            import usb.core
+            import usb.util
+            if device_id == "pocket4p":
+                dev = usb.core.find(idVendor=0x2CA3, idProduct=0x0020)
+            else:
+                dev = usb.core.find(
+                    idVendor=0x2CA3,
+                    custom_match=lambda device: "Pocket3" in (
+                        usb.util.get_string(device, device.iProduct) or ""
+                    ).replace(" ", ""),
+                )
+            if dev is None:
+                raise OSError("Camera USB device not found")
+            interface = dev.get_active_configuration()[(4, 0)]
+            if not any(ep.bEndpointAddress == 0x04 for ep in interface):
+                raise OSError("USB interface 4 has no endpoint 0x04")
+            usb.util.claim_interface(dev, 4)
+            try:
+                usb_sent = dev.write(0x04, packet, timeout=200) == len(packet)
+                if not usb_sent:
+                    usb_error = "Incomplete USB write"
+            finally:
+                usb.util.release_interface(dev, 4)
+        except Exception as error:
+            usb_error = str(error)
+
+        ip = camera.get("lan_ip")
+        port = camera.get("duml_udp_port", 9004)
+        if ip:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.settimeout(0.2)
+                    if sock.sendto(packet, (ip, port)) == len(packet):
+                        udp_sent_to = ip
+                    else:
+                        udp_error = "Incomplete UDP send"
+            except (OSError, TypeError, OverflowError) as error:
+                udp_error = str(error)
+        else:
+            udp_error = "No STA IP configured"
+
+        duml_hex = packet.hex(" ").upper()
+        dispatch = {"usb_dispatched": usb_sent, "udp_dispatched_to": udp_sent_to,
+                    "usb_error": usb_error, "udp_error": udp_error, "movement_confirmed": False}
+        log_entry = {
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "target": f"{device_id} ({ip or 'no STA IP'}:{port} / USB EP 0x04)",
+            "cmd": f"DUML [04:14] {preset} ({pitch}°, {yaw}°) {duml_hex}",
+            "output": (f"USB write: {'complete' if usb_sent else usb_error}; "
+                       f"UDP send: {'accepted locally' if udp_sent_to else udp_error}; "
+                       "gimbal movement unverified"),
+            **dispatch,
+        }
+        # Reload after I/O to preserve heartbeats received while writing to the transports.
+        state = self.load_state()
+        state["command_log"] = [log_entry, *state.get("command_log", [])][:25]
+        self.save_state(state)
+        ok = usb_sent or udp_sent_to is not None
+        return {"ok": ok, **({} if ok else {"error": "No DUML transport dispatched the frame"}),
+                "device_id": device_id, "preset": preset, "label": settings["label"],
+                "pitch_deg": pitch, "yaw_deg": yaw, "duml_hex": duml_hex,
+                **dispatch, "log_entry": log_entry}
 
     def trigger_lan_recording(self, device_id: str, action: str = "start") -> Dict[str, Any]:
         """

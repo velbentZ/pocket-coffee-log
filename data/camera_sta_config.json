@@ -25,11 +25,11 @@
       "recording_state": "unknown",
       "battery_percent": null,
       "sd_free_gb": 101.094,
-      "last_heartbeat": "2026-11-18T00:55:55.960317+08:00",
+      "last_heartbeat": "2026-11-18T11:33:00.914548+08:00",
       "capabilities": [],
       "adb_serial": "123456789ABCDEF",
       "verification": {
-        "checked_at": "2026-11-18T00:55:55.960317+08:00",
+        "checked_at": "2026-11-18T11:33:00.914548+08:00",
         "status": "live_sta_heartbeat",
         "usb_product": "OsmoPocket4P-ANHXP5J0022DTW",
         "adb_serial": "123456789ABCDEF",
@@ -96,6 +96,17 @@
     }
   },
   "command_log": [
+    {
+      "time": "11:32:47",
+      "target": "pocket4p (192.168.5.93:9004 / USB EP 0x04)",
+      "cmd": "DUML [04:14] scale_dose (-25.0°, -15.0°) 55 15 04 A9 02 04 14 00 40 04 14 06 FF 00 00 6A FF 07 0C E1 F0",
+      "output": "USB write: complete; UDP send: accepted locally; gimbal movement unverified",
+      "usb_dispatched": true,
+      "udp_dispatched_to": "192.168.5.93",
+      "usb_error": null,
+      "udp_error": null,
+      "movement_confirmed": false
+    },
     {
       "time": "2026-11-18T00:11:49.196579+08:00",
       "target": "pocket4p",

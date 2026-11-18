@@ -1,13 +1,16 @@
 import io
 import os
 import json
+import struct
 import subprocess
 from pathlib import Path
 import tempfile
+from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core.camera_sta_bridge import CameraInternalBridge, ON_CAMERA_AGENT_SCRIPT
+from core import camera_sta_bridge
 
 
 class CameraSTABridgeTests(unittest.TestCase):
@@ -32,6 +35,125 @@ class CameraSTABridgeTests(unittest.TestCase):
             del payload[key]
         self.bridge.record_heartbeat(payload, payload['ip'])
         self.assertEqual(self.bridge.load_state()['cameras']['pocket4p']['sd_free_gb'], 42.25)
+
+    def test_heartbeat_accepts_battery_and_recording_observations(self):
+        payload = dict(device_id='pocket4p', ip='192.168.5.93',
+                       mac_address='88:22:33:77:33:99', wifi_mode='STA',
+                       battery_percent=72, recording_state='recording')
+        self.bridge.record_heartbeat(payload, payload['ip'])
+        camera = self.bridge.sta_status()['cameras']['pocket4p']
+        self.assertEqual(camera['battery_percent'], 72)
+        self.assertEqual(camera['recording_state'], 'recording')
+        self.bridge.record_heartbeat(dict(payload, battery_percent=50, recording_state='idle'),
+                                     '192.168.5.92')
+        for invalid in (True, -1, 101, '72'):
+            self.bridge.record_heartbeat(dict(payload, battery_percent=invalid,
+                                              recording_state='guessed'), payload['ip'])
+        camera = self.bridge.sta_status()['cameras']['pocket4p']
+        self.assertEqual(camera['battery_percent'], 72)
+        self.assertEqual(camera['recording_state'], 'recording')
+        self.bridge.record_heartbeat(dict(payload, battery_percent=None), payload['ip'])
+        self.assertIsNone(self.bridge.sta_status()['cameras']['pocket4p']['battery_percent'])
+
+    def test_gimbal_angle_packet_uses_signed_tenths_and_valid_crcs(self):
+        packet = camera_sta_bridge.build_gimbal_angle_packet(-25, 1.5, -15, 1.2, seq=0x1234)
+        self.assertEqual(len(packet), 21)
+        self.assertEqual(packet[:3], b'\x55\x15\x04')
+        self.assertEqual(packet[3], camera_sta_bridge.crc8_dji(packet[:3]))
+        self.assertEqual(packet[4:11], b'\x02\x04\x34\x12\x40\x04\x14')
+        self.assertEqual(struct.unpack('<hhhBB', packet[11:-2]), (-250, 15, -150, 7, 12))
+        self.assertEqual(int.from_bytes(packet[-2:], 'little'), camera_sta_bridge.crc16_dji(packet[:-2]))
+
+    def test_move_gimbal_preset_dispatches_same_frame_on_usb_and_udp(self):
+        usb = ModuleType('usb')
+        device = Mock()
+        device.get_active_configuration.return_value = {(4, 0): [SimpleNamespace(bEndpointAddress=4)]}
+        device.write.side_effect = lambda ep, frame, **kw: len(frame)
+        usb.core = SimpleNamespace(find=Mock(return_value=device))
+        usb.util = SimpleNamespace(claim_interface=Mock(), release_interface=Mock())
+        with patch.dict('sys.modules', {'usb': usb, 'usb.core': usb.core, 'usb.util': usb.util}), \
+                patch('core.camera_sta_bridge.socket.socket') as socket_factory:
+            sock = socket_factory.return_value.__enter__.return_value
+            sock.sendto.side_effect = lambda frame, target: len(frame)
+            result = self.bridge.move_gimbal_preset(preset='scale_dose', yaw_deg=0)
+        frame = camera_sta_bridge.build_gimbal_angle_packet(-25, yaw_deg=0, duration_s=1.2)
+        usb.util.claim_interface.assert_called_once_with(device, 4)
+        device.write.assert_called_once_with(4, frame, timeout=200)
+        usb.util.release_interface.assert_called_once_with(device, 4)
+        sock.sendto.assert_called_once_with(frame, ('192.168.5.93', 9004))
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['usb_dispatched'])
+        self.assertEqual(result['udp_dispatched_to'], '192.168.5.93')
+        self.assertFalse(result['movement_confirmed'])
+        self.assertEqual(self.bridge.load_state()['command_log'][0], result['log_entry'])
+
+    def test_move_gimbal_records_dispatch_failure_and_rejects_invalid_inputs(self):
+        usb = ModuleType('usb')
+        usb.core = SimpleNamespace(find=Mock(return_value=None))
+        usb.util = SimpleNamespace()
+        with patch.dict('sys.modules', {'usb': usb, 'usb.core': usb.core, 'usb.util': usb.util}), \
+                patch('core.camera_sta_bridge.socket.socket', side_effect=OSError('network down')) as sock:
+            self.assertFalse(self.bridge.move_gimbal_preset(preset='typo')['ok'])
+            self.assertFalse(self.bridge.move_gimbal_preset(pitch_deg=float('nan'))['ok'])
+            sock.assert_not_called()
+            result = self.bridge.move_gimbal_preset()
+        self.assertFalse(result['ok'])
+        self.assertFalse(result['usb_dispatched'])
+        self.assertIsNone(result['udp_dispatched_to'])
+        self.assertIn('network down', result['log_entry']['output'])
+
+    def test_auto_provision_checks_and_starts_installed_agent_over_usb_adb(self):
+        argv = ['adb', '-P', '5037', '-s', '123456789ABCDEF']
+        transport = {'ok': True, 'transport': 'usb', 'argv': argv, 'serial': argv[-1]}
+        with patch.object(self.bridge, 'adb_transport', return_value=transport) as adb, \
+                patch.object(self.bridge, 'provision_sta_mode') as provision:
+            for status in ('started', 'already_running', 'not_installed'):
+                with self.subTest(status=status), patch(
+                    'core.camera_sta_bridge.subprocess.run',
+                    return_value=subprocess.CompletedProcess([], 0, status + '\n', ''),
+                ) as run:
+                    result = self.bridge.auto_provision_if_usb_connected()
+                    self.assertTrue(result['usb_connected'])
+                    self.assertEqual(result['agent_status']['status'], status)
+                    args = run.call_args.args[0]
+                    self.assertEqual(args[:-1], argv + ['shell'])
+                    self.assertIn('/data/pocket-coffee/pocket_sta_agent.sh', args[-1])
+                    self.assertIn('busybox nohup /system/bin/sh', args[-1])
+            provision.assert_not_called()
+            self.assertEqual(adb.call_count, 3)
+            adb.assert_called_with('pocket4p')
+
+    def test_auto_provision_does_not_start_agent_over_adb_tcp(self):
+        with patch.object(self.bridge, 'adb_transport', return_value={'ok': True, 'transport': 'tcp'}), \
+                patch.object(self.bridge, 'query_live_usb_camera_info', return_value={'connected': False}), \
+                patch('core.camera_sta_bridge.subprocess.run') as shell:
+            self.assertFalse(self.bridge.auto_provision_if_usb_connected()['usb_connected'])
+            shell.assert_not_called()
+
+    def test_agent_recovery_shell_ignores_reused_pid_and_launches_once(self):
+        root = Path(self.temp.name)
+        (root / 'proc/42').mkdir(parents=True)
+        (root / 'proc/42/cmdline').write_bytes(b'/system/bin/unrelated\0')
+        (root / 'agent.pid').write_text('42\n')
+        agent = root / 'pocket_sta_agent.sh'
+        agent.unlink()  # Bridge construction exports a copy into this directory.
+        command = camera_sta_bridge._ADB_ENSURE_STA_AGENT.replace(
+            '/data/pocket-coffee', str(root)).replace('/proc/', f'{root}/proc/')
+        # Emulate the firmware's BusyBox, shell and procfs using local fixtures.
+        command = 'busybox() { "$@"; }\n' + command.replace(
+            'busybox nohup /system/bin/sh', 'busybox nohup sh')
+
+        def run_recovery():
+            return subprocess.run(['sh', '-c', command], capture_output=True, text=True, check=True)
+
+        self.assertEqual(run_recovery().stdout.strip(), 'not_installed')
+        agent.write_text(r'''base="${0%/*}"
+printf '%s\0%s\0' /system/bin/sh "$0" > "$base/proc/42/cmdline"
+echo launched >> "$base/launches"
+''')
+        self.assertEqual(run_recovery().stdout.strip(), 'started')
+        self.assertEqual(run_recovery().stdout.strip(), 'already_running')
+        self.assertEqual((root / 'launches').read_text(), 'launched\n')
 
     @patch('core.camera_sta_bridge.urllib_request.urlopen', side_effect=OSError('no index'))
     def test_media_list_falls_back_to_real_adb_listing(self, _):
@@ -121,6 +243,17 @@ WIFI_SSID=coffee
         self.assertEqual(payloads[0]['sd_free_gb'], 101.217)
         self.assertEqual(payloads[0]['latest_media_file'], 'clip.MP4')
         self.assertEqual(payloads[0]['latest_media_url'], 'http://192.168.5.93:8088/DJI_001/clip.MP4')
+
+    def test_agent_reports_battery_capacity_only_for_a_battery(self):
+        supply = Path(self.temp.name, 'battery')
+        supply.mkdir()
+        (supply / 'capacity').write_text('072\n')
+        (supply / 'type').write_text('Mains\n')
+        self.assertIsNone(self.run_agent_functions('POWER_SUPPLY_DIR="$BASE_DIR"; heartbeat')[0]['battery_percent'])
+        (supply / 'type').write_text('Battery\n')
+        self.assertEqual(self.run_agent_functions('POWER_SUPPLY_DIR="$BASE_DIR"; heartbeat')[0]['battery_percent'], 72)
+        (supply / 'capacity').write_text('101\n')
+        self.assertIsNone(self.run_agent_functions('POWER_SUPPLY_DIR="$BASE_DIR"; heartbeat')[0]['battery_percent'])
 
     def test_agent_watcher_waits_for_stable_size_and_deduplicates(self):
         payloads = self.run_agent_functions(r"""

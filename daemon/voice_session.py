@@ -24,6 +24,13 @@ from core.store import CoffeeStore
 WAKE_KEYWORDS = ["我要开始制作咖啡", "开始制作咖啡", "开始做咖啡", "开始萃咖啡", "开始冲咖啡"]
 STOP_KEYWORDS = ["咖啡制作完成", "制作完成", "制作结束", "录制结束", "停止录制", "做好了"]
 
+GIMBAL_STAGE_KEYWORDS = [
+    ("scale_dose", ["称重", "称豆", "克豆"]),
+    ("grinder_dial", ["磨豆", "刻度", "研磨"]),
+    ("espresso_gauge", ["萃取", "压力", "预浸泡"]),
+    ("final_cup", ["出液", "完成", "出杯", "做好了", "制作结束"]),
+]
+
 
 class VoiceWakeupSessionManager:
     def __init__(
@@ -48,8 +55,35 @@ class VoiceWakeupSessionManager:
             "utterance_events": [],
             "compacted_context": None,
             "auto_silence_timeout_s": 25,
+            "last_gimbal_preset": None,
             "last_event": "语音守护进程待命中：说出「我要开始制作咖啡」即可触发 STA 相机自动开录",
         }
+
+    @staticmethod
+    def detect_gimbal_stage(text: str) -> Optional[str]:
+        if not text:
+            return None
+        best_pos = -1
+        best_preset: Optional[str] = None
+        for preset, keywords in GIMBAL_STAGE_KEYWORDS:
+            for kw in keywords:
+                pos = text.rfind(kw)
+                if pos > best_pos:
+                    best_pos = pos
+                    best_preset = preset
+        return best_preset
+
+    def _follow_gimbal_stage(self, camera_id: str, text: str) -> Optional[Dict[str, Any]]:
+        preset = self.detect_gimbal_stage(text)
+        if not preset or not hasattr(self.camera_bridge, "move_gimbal_preset"):
+            return None
+        move_fn = getattr(self.camera_bridge, "move_gimbal_preset", None)
+        if not callable(move_fn):
+            return None
+        try:
+            return move_fn(device_id=camera_id, preset=preset)
+        except TypeError:
+            return move_fn(camera_id, preset)
 
     def get_status(self) -> Dict[str, Any]:
         return dict(self.active_session)
@@ -60,6 +94,7 @@ class VoiceWakeupSessionManager:
 
         # Trigger LAN STA shutter start
         shutter_res = self.camera_bridge.trigger_lan_recording(camera_id, action="start")
+        gimbal_res = self._follow_gimbal_stage(camera_id, initial_phrase)
         now_str = datetime.now().strftime("%H:%M:%S")
         sess_id = f"sess-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
@@ -79,6 +114,8 @@ class VoiceWakeupSessionManager:
             "utterance_events": utterances,
             "compacted_context": compacted.to_dict(),
             "auto_silence_timeout_s": 25,
+            "last_gimbal_preset": gimbal_res.get("preset") if isinstance(gimbal_res, dict) else self.detect_gimbal_stage(initial_phrase),
+            "last_gimbal_result": gimbal_res,
             "last_event": f"已唤醒 {model} ({cam_state.get('lan_ip', 'LAN')}) 进入录制状态，正在实时监听语音与画面...",
             "shutter_duml_hex": shutter_res.get("duml_hex", ""),
         }
@@ -90,10 +127,19 @@ class VoiceWakeupSessionManager:
         if not text:
             return {"session": self.active_session}
 
+        gimbal_res: Optional[Dict[str, Any]] = None
         if self.active_session["state"] != "recording":
             self.start_session(self.active_session.get("camera_id", "pocket4p"), initial_phrase=text)
+            gimbal_res = self.active_session.get("last_gimbal_result")
         else:
             now_str = datetime.now().strftime("%H:%M:%S")
+            cam_id = self.active_session.get("camera_id", "pocket4p")
+            gimbal_res = self._follow_gimbal_stage(cam_id, text)
+            if gimbal_res is not None or self.detect_gimbal_stage(text):
+                self.active_session["last_gimbal_preset"] = (
+                    gimbal_res.get("preset") if isinstance(gimbal_res, dict) else self.detect_gimbal_stage(text)
+                )
+                self.active_session["last_gimbal_result"] = gimbal_res
             self.active_session["transcript_chunks"].append(text)
             self.active_session.setdefault("utterance_events", []).append(
                 {"text": text, "source": source, "timestamp": now_str}
@@ -107,9 +153,12 @@ class VoiceWakeupSessionManager:
             self.active_session["last_event"] = f"已捕获过程语音并无损压缩：「{compacted.compacted_summary[:68]}...」"
 
         if any(s in text for s in STOP_KEYWORDS):
-            return self.stop_and_process(reason="识别到结束语音指令，自动停录并生成报告")
+            stop_out = self.stop_and_process(reason="识别到结束语音指令，自动停录并生成报告")
+            if gimbal_res is not None:
+                stop_out["gimbal_action"] = gimbal_res
+            return stop_out
 
-        return {"session": self.active_session, "auto_stopped": False}
+        return {"session": self.active_session, "auto_stopped": False, "gimbal_action": gimbal_res}
 
     def stop_and_process(
         self,
@@ -207,6 +256,13 @@ class VoiceWakeupSessionManager:
         enrich_barista_analysis(record)
         self.store.save_record(record)
 
+        # 5b. Auto-deduct consumed bean weight from Beanconqueror-style inventory
+        bean_inventory: Optional[Dict[str, Any]] = None
+        if record.bean_weight_g is not None and float(record.bean_weight_g) > 0 and record.bean_name:
+            bean_inventory = self.bean_manager.deduct_bean_dose(
+                record.bean_name, float(record.bean_weight_g)
+            )
+
         # 6. Dispatch mobile push notification
         notif = self.notifier.notify_brew_record(record)
         global_event_bus.publish("session.completed", {"record_id": record.id, "compacted": compacted.to_dict()})
@@ -222,6 +278,7 @@ class VoiceWakeupSessionManager:
             "utterance_events": [],
             "compacted_context": compacted.to_dict(),
             "auto_silence_timeout_s": 25,
+            "last_gimbal_preset": None,
             "last_event": f"{reason} → 已生成报告 [{record.id}] (无损压缩校验: {compacted.checksum_sha256})",
             "last_record_id": record.id,
             "shutter_duml_hex": shutter_stop.get("duml_hex", ""),
@@ -234,6 +291,7 @@ class VoiceWakeupSessionManager:
             "video_path": video_file,
             "camera_file_path": explicit_video_path or default_camera_path,
             "vision_analysis": vision_analysis,
+            "bean_inventory": bean_inventory,
             "session": self.active_session,
             "compacted_context": compacted.to_dict(),
             "record": record.to_dict(),

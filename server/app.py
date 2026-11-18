@@ -5,6 +5,9 @@ Provides REST endpoints for:
 - `/api/state`: Full dashboard state (coffee records, active voice session, camera STA nodes, notification logs)
 - `/api/camera/sta`: Verified camera STA state and network configuration
 - `/api/camera/media`: Latest camera media info & `:8088` remote DCIM file listing
+- `/api/camera/pull_media`: Pull latest `.MP4` from camera `:8088` and extract 4-stage keyframes
+- `/api/camera/gimbal`: Move Pocket 3 / Pocket 4 Pro gimbal between OsmoDesk brew presets (`P0`–`P4`)
+- `/api/beans/scan_label`: Parse natural language / OCR coffee bag label text into Bean Library
 - `/api/records/compare`: Visualizer / Beanconqueror style side-by-side shot comparison (`?bean=...`)
 - `/api/voice/utterance`: Feed spoken voice transcript ("我要开始制作咖啡...", parameter narration, "制作完成")
 - `/api/voice/stop`: Manually or automatically stop recording and trigger AI report generation
@@ -389,6 +392,22 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({"ok": True, "snapshot": snap, "registry": global_registry.summary()})
             return
 
+        if path == "/api/media/keyframe":
+            rel_or_abs = (qs.get("path") or [""])[0]
+            base_dir = os.path.realpath(vision_engine.data_dir)
+            target = os.path.realpath(rel_or_abs) if rel_or_abs else ""
+            if not target or not (target.startswith(base_dir + os.sep)) or not os.path.isfile(target):
+                self._send_json({"ok": False, "error": "Keyframe image not found"}, status=404)
+                return
+            with open(target, "rb") as img_f:
+                raw_img = img_f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(raw_img)))
+            self.end_headers()
+            self.wfile.write(raw_img)
+            return
+
         if path == "/api/camera/script":
             with open(camera_bridge.script_export_path, "r", encoding="utf-8") as f:
                 script_content = f.read()
@@ -513,6 +532,78 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             self._send_json(res)
             return
 
+        if path == "/api/camera/gimbal":
+            device_id = body.get("device_id", "pocket4p")
+            preset = body.get("preset", "reset_center")
+            pitch_deg = body.get("pitch_deg")
+            yaw_deg = body.get("yaw_deg")
+            move_fn = getattr(camera_bridge, "move_gimbal_preset", None)
+            if not callable(move_fn):
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "Camera bridge does not support move_gimbal_preset",
+                        "device_id": device_id,
+                        "preset": preset,
+                    },
+                    status=501,
+                )
+                return
+            try:
+                res = move_fn(
+                    device_id=device_id,
+                    preset=preset,
+                    pitch_deg=pitch_deg,
+                    yaw_deg=yaw_deg,
+                )
+            except TypeError:
+                res = move_fn(device_id, preset)
+
+            err_msg = str(res.get("error") or "")
+            is_client_error = any(
+                token in err_msg
+                for token in (
+                    "Unknown gimbal preset",
+                    "outside the DUML",
+                    "finite numbers",
+                )
+            ) or (err_msg.startswith("Camera ") and err_msg.endswith(" not found"))
+            self._send_json(res, status=400 if is_client_error else 200)
+            return
+
+        if path == "/api/camera/pull_media":
+            device_id = body.get("device_id", "pocket4p")
+            max_bytes = body.get("max_bytes")
+            extract_keyframes = body.get("extract_keyframes", True)
+            pull_fn = getattr(camera_bridge, "pull_latest_media", None)
+            if not callable(pull_fn):
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "Camera bridge does not support pull_latest_media",
+                        "device_id": device_id,
+                    },
+                    status=501,
+                )
+                return
+            try:
+                if max_bytes is not None:
+                    pull_res = pull_fn(device_id=device_id, max_bytes=max_bytes)
+                else:
+                    pull_res = pull_fn(device_id=device_id)
+            except TypeError:
+                pull_res = pull_fn(device_id)
+
+            if pull_res.get("ok") and pull_res.get("local_path") and extract_keyframes:
+                video_meta = vision_engine.extract_video_metadata_and_frames(pull_res["local_path"])
+                pull_res = {
+                    **pull_res,
+                    "video_metadata": video_meta,
+                    "keyframes": video_meta.get("keyframes", []),
+                }
+            self._send_json(pull_res, status=400 if "max_bytes" in str(pull_res.get("error", "")) else 200)
+            return
+
         if path == "/api/camera/webhook":
             # Triggered automatically by /data/pocket-coffee/pocket_sta_agent.sh inside Pocket 3 / Pocket 4 Pro
             camera_id = body.get("device_id") or (
@@ -532,6 +623,15 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 video_path=file_path,
             )
             self._send_json({"ok": True, "webhook_processed": True, **res})
+            return
+
+        if path == "/api/beans/scan_label":
+            label_text = (body.get("text") or body.get("label_text") or "").strip()
+            if not label_text:
+                self._send_json({"ok": False, "error": "豆袋标签或描述文本不能为空"}, status=400)
+                return
+            bean_entry = bean_manager.parse_bean_label_text(label_text)
+            self._send_json({"ok": True, "bean": bean_entry, "bean_library": bean_manager.load_all()})
             return
 
         if path == "/api/beans/save":

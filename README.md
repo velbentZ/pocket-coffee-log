@@ -15,11 +15,16 @@
      - 在相机内启动 `/sbin/busybox httpd -p 8088 -h /mnt/media_rw/emulated/DCIM`，局域网可直接通过 `http://192.168.5.93:8088/DJI_001/...` 高速预览与拉取 `.MP4` 原片（`GET /api/camera/media`）；
      - 守护进程周期性通过 BusyBox `nc` 向宿主机发送真实源 IP 心跳 `POST /api/camera/heartbeat`（目标 `http://192.168.5.84:8788`），服务端严格核验请求源 IP 与上报 STA IP 一致性，并支持录制完成自动触发 `POST /api/camera/webhook`。
 
-2. **🎙️ 零人工干预 · 语音唤醒开录 & 多模态 FFmpeg 关键帧抽帧 (`daemon/voice_session.py`, `core/multimodal_vision.py`)**
+2. **🎙️ 零人工干预 · 语音唤醒开录、OsmoDesk 云台自动跟拍 & 多模态 FFmpeg 关键帧抽帧 (`daemon/voice_session.py`, `core/multimodal_vision.py`)**
    - 当检测到唤醒词 **「我要开始制作咖啡」** 或 **「开始做咖啡」** 时，立即触发相机录制并采集多轮口述语音（支持口误自我修正与无损上下文压缩 `SessionContextCompactor`）；
-   - 支持本地 `.MP4` 文件与相机远程 HTTP 媒体流（`http://192.168.5.93:8088/DJI_001/...`），当本机安装 `ffprobe` / `ffmpeg` 时自动读取真实视频时长与分辨率，并在 **15% / 35% / 70% / 90%** 四个关键萃取阶段抽取 JPEG 缩略关键帧落盘至 `data/keyframes/<session_or_basename>/`（离线或单元测试环境下自动优雅降级）。
+   - **🎯 OsmoDesk 云台机位预设联动 (`POST /api/camera/gimbal`)**：内置 `P0 回中 (reset_center)`、`P1 电子秤称豆 (scale_dose)`、`P2 磨豆刻度 (grinder_dial)`、`P3 压力表油脂 (espresso_gauge)`、`P4 出杯读秒 (final_cup)` 五组云台预设；在口述过程检测到「称豆 / 磨豆刻度 / 萃取压力 / 出液完成」等阶段词时自动驱动相机云台跟随动作；
+   - **⬇️ 无线拉取 MP4 & 4 阶段关键帧抽帧 (`POST /api/camera/pull_media`)**：支持从相机 `:8088` 原子化拉取最新 `.MP4` 原片至本地缓存，并在本机安装 `ffprobe` / `ffmpeg` 时自动读取真实视频时长与分辨率，在 **15% / 35% / 70% / 90%** 四个关键萃取阶段抽取 JPEG 缩略关键帧落盘至 `data/keyframes/<session_or_basename>/`（离线或单元测试环境下自动优雅降级）。
 
-3. **📋 全维度咖啡制作报告、AI 咖啡师建议 & 同款豆萃取对比 (`core/analyzer.py`, `server/app.py`)**
+3. **🫘 Beanconqueror 风格豆仓余量、赏味期生命周期 & AI 豆袋标签一键入库 (`core/bean_equipment_store.py`)**
+   - **库存扣减与赏味期追踪 (`deduct_bean_dose`)**：为每袋咖啡豆维护 `roast_date`、`initial_weight_g`、`remaining_weight_g`、`bag_status` (`active` / `frozen` / `finished`) 与累计冲煮次数 `brew_count`；每次完成制作后自动扣减豆重并计算烘焙天数 `days_off_roast` 与状态（0–4 天 `养豆期 (Degassing)`、5–28 天 `黄金赏味期 (Peak Window)`、>28 天 `风味衰退期 (Aging)`）；
+   - **🏷️ AI 豆袋标签解析入库 (`POST /api/beans/scan_label` / `parse_bean_label_text`)**：粘贴或语音口述豆袋标签（如 `"巴拿马翡翠庄园红标瑰夏 日晒 浅烘 200g 柑橘茉莉花水蜜桃 烘焙日期 2026-11-10"`）即可一键解析结构化产地、处理法、烘焙度、风味标签、净含量与烘焙日期并同步入库。
+
+4. **📋 全维度咖啡制作报告、AI 咖啡师建议 & 同款豆萃取对比 (`core/analyzer.py`, `server/app.py`)**
    - 自动提取并结构化记录：
      - **咖啡豆名称/产地/处理法/烘焙度**（联动个人常驻豆仓简称匹配）
      - **咖啡豆称重 (g)**、**研磨度刻度**、**研磨机器类型**（区分 **额外独立磨豆机** 如 Niche Zero / DF64 / Weber EG-1，还是 **咖啡机自身自带磨豆机**）
@@ -27,11 +32,11 @@
      - **萃取液重/出液量 (g/ml)**、自动计算的 **粉液比 (Brew Ratio)**、**萃取时间 (s / h)** 与 **萃取压力 (bar)**
    - **📊 Visualizer 风格同款豆并排萃取对比 (`GET /api/records/compare?bean=...`)**：支持对同一支豆或同种萃取方式的历史出品进行粉重、研磨刻度、液重、粉液比、耗时、压力及 **感官风味六维雷达差值 (Delta)** 的并排可视化复盘。
 
-4. **📲 手机端通知提醒 & 缺失参数互动补全 (`core/notifier.py`)**
+5. **📲 手机端通知提醒 & 缺失参数互动补全 (`core/notifier.py`)**
    - 支持 **企业微信机器人 (WeCom)**、**微信 Server酱**、**iOS Bark**、**飞书机器人** 以及 macOS 本地通知横幅；
    - 若录制过程中漏说关键参数，自动向手机发送 **「⚠️ 咖啡记录待补全」** 提醒（直达 `http://192.168.5.84:8788/?record_id=...&action=supplement`），一句话语音或表单即可补全并重算报告。
 
-5. **📕 小红书 / 微信朋友圈精美海报与种草文案一键导出 (`static/index.html`)**
+6. **📕 小红书 / 微信朋友圈精美海报与种草文案一键导出 (`static/index.html`)**
    - 内置 3:4 比例杂志级咖啡打卡视觉海报生成器（支持一键导出高清 `.png` 海报图片）；
    - 自动撰写带 Emoji 与热门标签的 **小红书图文笔记** 与 **微信朋友圈打卡文案**。
 

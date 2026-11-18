@@ -11,7 +11,12 @@ DCIM_DIR="${DCIM_DIR:-/mnt/media_rw/emulated/DCIM}"
 BB=/sbin/busybox
 mkdir -p "$BASE_DIR"
 PID_FILE="$BASE_DIR/agent.pid"
-if [ -r "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then exit 0; fi
+OLD_PID=$(cat "$PID_FILE" 2>/dev/null)
+case "$OLD_PID" in
+    ''|*[!0-9]*) ;;
+    *) if [ -r "/proc/$OLD_PID/cmdline" ] &&
+           "$BB" tr '\000' '\n' < "/proc/$OLD_PID/cmdline" | "$BB" grep -Fxq "$0"; then exit 0; fi ;;
+esac
 echo $$ > "$PID_FILE"
 trap 'rm -f "$PID_FILE"; exit' INT TERM EXIT
 log() { echo "$(date) $*" >> "$BASE_DIR/agent.log"; }
@@ -51,6 +56,15 @@ ensure_sta() {
 
 json_escape() { printf '%s' "$1" | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'; }
 newest_mp4() { "$BB" ls -1t "$DCIM_DIR"/DJI_001/*.MP4 2>/dev/null | "$BB" head -n 1; }
+battery_capacity() {
+    for SUPPLY in "${POWER_SUPPLY_DIR:-/sys/class/power_supply}"/*; do
+        [ -r "$SUPPLY/type" ] && [ -r "$SUPPLY/capacity" ] || continue
+        [ "$(cat "$SUPPLY/type")" = Battery ] || continue
+        CAPACITY=$("$BB" awk 'NR == 1 && /^[0-9]+$/ && $0 <= 100 {printf "%d", $0}' "$SUPPLY/capacity" 2>/dev/null)
+        if [ -n "$CAPACITY" ]; then printf '%s' "$CAPACITY"; return; fi
+    done
+    printf 'null'
+}
 post_json() {
     POST_PATH="$1"
     POST_BODY="$2"
@@ -60,15 +74,16 @@ post_json() {
 
 heartbeat() {
     MAC=$(cat /sys/class/net/wlan0/address)
+    BATTERY_PERCENT=$(battery_capacity)
     SD_FREE_GB=$("$BB" df -k /mnt/media_rw/emulated 2>/dev/null | "$BB" awk '/%/ && $(NF-2) ~ /^[0-9]+$/ {printf "%.3f", $(NF-2)/1048576; exit}')
     SD_FREE_GB="${SD_FREE_GB:-null}"
     LATEST_MP4=$(newest_mp4)
     LATEST_MEDIA_FILE="${LATEST_MP4##*/}"
     LATEST_MEDIA_URL=""
     [ -n "$LATEST_MEDIA_FILE" ] && LATEST_MEDIA_URL="http://$CURRENT_IP:8088/DJI_001/$LATEST_MEDIA_FILE"
-    BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v4-hg224-media\",\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
+    BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v5-hg224-telemetry\",\"battery_percent\":$BATTERY_PERCENT,\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
     if post_json /api/camera/heartbeat "$BODY"; then
-        log "heartbeat accepted ip=$CURRENT_IP sd_free_gb=$SD_FREE_GB latest_media_file=$LATEST_MEDIA_FILE"
+        log "heartbeat accepted ip=$CURRENT_IP battery_percent=$BATTERY_PERCENT sd_free_gb=$SD_FREE_GB latest_media_file=$LATEST_MEDIA_FILE"
     else
         log "heartbeat failed: $RESPONSE"
     fi

@@ -31,6 +31,8 @@
     }
 
     body {
+      color-scheme: dark;
+      accent-color: var(--crema-bright);
       background: radial-gradient(circle at 15% 0%, #2a1e18 0%, var(--bg-dark) 65%);
       color: var(--text-main);
       font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -1048,6 +1050,138 @@
       margin-top: 8px;
     }
 
+    /* Beanconqueror Inventory Progress Bar & Freshness Lifecycle */
+    .bean-inventory-row {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed rgba(212, 163, 115, 0.16);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .bean-inventory-labels {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    progress.bean-weight-progress {
+      appearance: none;
+      border: 0 solid;
+      overflow: clip;
+      inline-size: 100%;
+      block-size: 9px;
+      --progress-bar-radius: 1e5px;
+      border-radius: var(--progress-bar-radius);
+      background: var(--progress-bar-track, rgba(255, 255, 255, 0.1));
+      box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.35);
+      display: block;
+    }
+
+    progress.bean-weight-progress::-webkit-progress-bar {
+      background: transparent;
+    }
+
+    progress.bean-weight-progress::-webkit-progress-value {
+      background: var(--progress-bar-fill, var(--accent-green));
+      border-radius: var(--progress-bar-radius);
+      transition: inline-size 0.3s;
+    }
+
+    progress.bean-weight-progress::-moz-progress-bar {
+      background: var(--progress-bar-fill, var(--accent-green));
+      border-radius: var(--progress-bar-radius);
+      transition: inline-size 0.3s;
+    }
+
+    .badge-fresh-peak {
+      background: rgba(82, 183, 136, 0.18);
+      color: #74c69d;
+      border: 1px solid rgba(82, 183, 136, 0.4);
+    }
+
+    .badge-fresh-degas {
+      background: rgba(244, 162, 97, 0.2);
+      color: var(--accent-amber);
+      border: 1px solid rgba(244, 162, 97, 0.45);
+    }
+
+    .badge-fresh-aging {
+      background: rgba(231, 111, 81, 0.18);
+      color: #ff9b85;
+      border: 1px solid rgba(231, 111, 81, 0.4);
+    }
+
+    .label-scanner-box {
+      background: linear-gradient(135deg, rgba(212, 163, 115, 0.14) 0%, rgba(47, 35, 29, 0.65) 100%);
+      border: 1px solid rgba(212, 163, 115, 0.38);
+      border-radius: 14px;
+      padding: 14px 16px;
+      margin-bottom: 18px;
+    }
+
+    .gimbal-preset-box {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(20, 15, 13, 0.85);
+      border: 1px solid rgba(212, 163, 115, 0.28);
+    }
+
+    .gimbal-btn-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 8px;
+    }
+
+    .btn-gimbal {
+      padding: 7px 11px;
+      font-size: 12px;
+      border-radius: 8px;
+      background: #281e19;
+      border: 1px solid rgba(212, 163, 115, 0.32);
+      color: var(--crema-bright);
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.16s ease;
+    }
+
+    .btn-gimbal:hover {
+      background: #3b2b23;
+      border-color: var(--crema-bright);
+    }
+
+    .keyframe-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .keyframe-card {
+      background: #17120f;
+      border: 1px solid rgba(212, 163, 115, 0.24);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 11.5px;
+    }
+
+    .keyframe-card img {
+      width: 100%;
+      border-radius: 6px;
+      margin-top: 6px;
+      display: block;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+      background: #0b0908;
+    }
+
     .toast {
       position: fixed;
       bottom: 24px;
@@ -1139,24 +1273,45 @@
       <div class="sta-grid">
         <div class="camera-card">
           <div class="camera-card-head">
-            <h3>🫘 我的常驻咖啡豆仓（口述简称自动匹配产地/烘焙度/推荐刻度）</h3>
-            <span class="badge badge-ok">简称自动补全</span>
+            <h3>🫘 豆库与磨豆机档案（Beanconqueror 库存余量 &amp; 赏味期生命周期）</h3>
+            <span class="badge badge-ok">简称补全 · 自动扣减克重</span>
           </div>
           <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px;">
-            录入您的常用豆后，平时做咖啡只需对着相机说一句「<strong>今天用花魁</strong>」或「<strong>今天冲瑰夏</strong>」，系统会自动补全完整庄园产地、处理法、烘焙度与风味标签，无需每次冗长背诵。
+            录入常用豆后，每次冲煮完自动扣减剩余克重并追踪 <strong>养豆期 / 黄金赏味期 / 风味衰退期</strong>；平时只需口述一句「<strong>今天用花魁</strong>」或「<strong>今天冲瑰夏</strong>」即可自动补全全套产地、处理法与推荐研磨度。
           </p>
+
+          <!-- AI Bag Label Quick Scanner -->
+          <div class="label-scanner-box">
+            <label for="scanLabelInput" style="display:block; font-size:13px; font-weight:700; color:var(--crema-bright); margin-bottom:6px;">
+              🏷️ AI 豆袋标签一键解析入库 (Brewlog / Filtru 风格 OCR 文本识别)
+            </label>
+            <div class="voice-input-group">
+              <input
+                id="scanLabelInput"
+                class="voice-input"
+                type="text"
+                placeholder="粘贴或语音输入豆袋标签，例如：巴拿马翡翠庄园红标瑰夏 日晒 浅烘 200g 柑橘茉莉花水蜜桃 烘焙日期 2026-11-10"
+              />
+              <button class="btn" type="button" onclick="fillSampleBeanLabel()">✨ 示例标签</button>
+              <button class="btn btn-primary" type="button" onclick="scanBeanLabel()">⚡ AI 解析入库</button>
+            </div>
+            <div id="scanLabelStatus" role="status" aria-live="polite" style="font-size:12px; color:#74c69d; margin-top:6px;"></div>
+          </div>
+
           <div id="beanLibraryList" class="record-list" style="margin-bottom:18px;"></div>
 
-          <h4 style="font-size:14px; color:var(--crema-bright); margin-bottom:10px;">➕ 新增 / 更新咖啡豆档案</h4>
+          <h4 style="font-size:14px; color:var(--crema-bright); margin-bottom:10px;">➕ 手动新增 / 更新咖啡豆档案</h4>
           <div class="supplement-grid">
-            <div class="supp-field"><label>语音唤醒简称 (逗号分隔)</label><input id="newBeanAliases" placeholder="如：雪莉, 洪都拉斯雪莉" /></div>
-            <div class="supp-field"><label>咖啡豆完整名称</label><input id="newBeanFullName" placeholder="如：洪都拉斯 莫卡庄园 威士忌雪莉桶发酵" /></div>
-            <div class="supp-field"><label>烘焙度</label><input id="newBeanRoast" value="中浅烘焙" /></div>
-            <div class="supp-field"><label>推荐磨豆刻度</label><input id="newBeanGrind" value="刻度 14.0 格" /></div>
-            <div class="supp-field"><label>风味标签 (逗号分隔)</label><input id="newBeanFlavors" value="威士忌酒香, 香草奶油, 黑巧" /></div>
-            <div class="supp-field"><label>黄金配方备注</label><input id="newBeanNote" value="18g -> 36g / 28s @ 9bar" /></div>
+            <div class="supp-field"><label for="newBeanAliases">语音唤醒简称 (逗号分隔)</label><input id="newBeanAliases" placeholder="如：雪莉, 洪都拉斯雪莉" /></div>
+            <div class="supp-field"><label for="newBeanFullName">咖啡豆完整名称</label><input id="newBeanFullName" placeholder="如：洪都拉斯 莫卡庄园 威士忌雪莉桶发酵" /></div>
+            <div class="supp-field"><label for="newBeanRoast">烘焙度</label><input id="newBeanRoast" value="中浅烘焙" /></div>
+            <div class="supp-field"><label for="newBeanRoastDate">烘焙日期 (YYYY-MM-DD)</label><input id="newBeanRoastDate" type="date" value="2026-11-10" /></div>
+            <div class="supp-field"><label for="newBeanInitWeight">整袋净含量 (g)</label><input id="newBeanInitWeight" type="number" step="1" value="250" /></div>
+            <div class="supp-field"><label for="newBeanGrind">推荐磨豆刻度</label><input id="newBeanGrind" value="刻度 14.0 格" /></div>
+            <div class="supp-field"><label for="newBeanFlavors">风味标签 (逗号分隔)</label><input id="newBeanFlavors" value="威士忌酒香, 香草奶油, 黑巧" /></div>
+            <div class="supp-field"><label for="newBeanNote">黄金配方备注</label><input id="newBeanNote" value="18g -> 36g / 28s @ 9bar" /></div>
           </div>
-          <button class="btn btn-primary" onclick="saveNewBean()">💾 保存到我的咖啡豆仓</button>
+          <button class="btn btn-primary" type="button" onclick="saveNewBean()">💾 保存到我的咖啡豆仓</button>
         </div>
 
         <div class="camera-card">
@@ -1860,6 +2015,14 @@
       }
     }
 
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
     function renderBeansTab() {
       const lib = appState.bean_library || {};
       const beans = lib.beans || [];
@@ -1867,20 +2030,61 @@
 
       const listEl = document.getElementById('beanLibraryList');
       if (listEl) {
-        listEl.innerHTML = beans.map(b => `
-          <div class="record-item">
-            <div class="record-item-top">
-              <span style="font-size:12px; color:var(--crema-bright); font-weight:700;">🎙️ 语音简称: ${(b.short_aliases || []).join(' / ')}</span>
-              <span class="badge badge-ok">${b.roast_level || '中浅烘'} · 余量 ${b.remaining_weight_g || 200}g</span>
+        listEl.innerHTML = beans.map(b => {
+          const initW = Math.max(1, Number(b.initial_weight_g ?? 250));
+          const remW = Math.max(0, Number(b.remaining_weight_g ?? 200));
+          const pct = Math.min(100, Math.round((remW / initW) * 100));
+          const fillColor = remW <= 0 || pct <= 12
+            ? 'var(--accent-red)'
+            : (pct <= 30 ? 'var(--accent-amber)' : 'var(--accent-green)');
+
+          const stage = b.freshness_stage || '黄金赏味期 (Peak Window)';
+          const daysOff = (b.days_off_roast !== null && b.days_off_roast !== undefined)
+            ? `烘焙后 ${b.days_off_roast} 天`
+            : '烘焙期未填';
+          const freshBadgeClass = stage.includes('养豆期')
+            ? 'badge-fresh-degas'
+            : (stage.includes('衰退') ? 'badge-fresh-aging' : 'badge-fresh-peak');
+
+          const statusMap = { active: '🟢 开封在用', frozen: '❄️ 冷冻锁鲜', finished: '🏁 已喝完空袋' };
+          const bagStatusLabel = statusMap[b.bag_status] || '🟢 开封在用';
+          const brewCount = Number(b.brew_count ?? 0);
+
+          return `
+            <div class="record-item">
+              <div class="record-item-top" style="flex-wrap:wrap; gap:6px;">
+                <span style="font-size:12px; color:var(--crema-bright); font-weight:700;">🎙️ 语音简称: ${escapeHtml((b.short_aliases || []).join(' / '))}</span>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <span class="badge ${freshBadgeClass}">🌿 ${escapeHtml(stage)} · ${escapeHtml(daysOff)}</span>
+                  <span class="badge badge-ok">☕️ 累计冲煮 ${brewCount} 次</span>
+                </div>
+              </div>
+              <div class="record-bean">${escapeHtml(b.full_name)}</div>
+              <div class="record-meta" style="margin-top:4px; flex-wrap:wrap; gap:6px;">
+                <span>产区/处理: <strong>${escapeHtml(b.origin || '--')} · ${escapeHtml(b.process || '--')} (${escapeHtml(b.roast_level || '中浅烘')})</strong></span>
+                <span>烘焙日: <code>${escapeHtml(b.roast_date || '--')}</code> · ${bagStatusLabel}</span>
+              </div>
+              <div class="record-meta" style="margin-top:4px; flex-wrap:wrap; gap:6px;">
+                <span>推荐刻度: <strong>${escapeHtml(b.recommended_grind || '--')}</strong></span>
+                <span>✨ ${escapeHtml((b.flavor_tags || []).join(' · '))}</span>
+              </div>
+              <div class="bean-inventory-row">
+                <div class="bean-inventory-labels">
+                  <span>📦 豆袋余量进度: <strong style="color:var(--latte);">${remW}g</strong> / ${initW}g (${pct}%)</span>
+                  <span style="color:var(--crema);">约可再萃 ${Math.max(0, Math.floor(remW / Number(b.recommended_dose_g || 18)))} 杯</span>
+                </div>
+                <progress
+                  class="bean-weight-progress"
+                  max="${initW}"
+                  value="${Math.min(initW, remW)}"
+                  style="--progress-bar-fill: ${fillColor};"
+                  aria-label="${escapeHtml(b.full_name)} 剩余克重 ${remW} 克，总重 ${initW} 克"
+                ></progress>
+              </div>
+              <div style="font-size:11.5px; color:var(--crema); margin-top:6px;">🏆 黄金配方: ${escapeHtml(b.golden_recipe_note || '--')}</div>
             </div>
-            <div class="record-bean">${b.full_name}</div>
-            <div class="record-meta" style="margin-top:4px;">
-              <span>推荐刻度: <strong>${b.recommended_grind || '--'}</strong></span>
-              <span>✨ ${(b.flavor_tags || []).join(' · ')}</span>
-            </div>
-            <div style="font-size:11.5px; color:var(--crema); margin-top:4px;">🏆 黄金配方: ${b.golden_recipe_note || '--'}</div>
-          </div>
-        `).join('');
+          `;
+        }).join('');
       }
 
       if (document.getElementById('eqGrinderType')) {
@@ -1896,6 +2100,51 @@
         const serials = (usb.serial_ports || []).join(', ') || '未检测到 DJI 串口';
         usbEl.innerHTML = `当前已连接 DJI 串口/音频节点: <code>${serials}</code> | 相机 USB-C 直连状态: <strong>${usb.camera_usb_connected ? '🟢 已连接真机 (' + (usb.detected_camera_product || 'OsmoPocket') + ')' : '⚪ 等待插入 Pocket 3 / Pocket 4 Pro USB-C 数据线'}</strong>`;
       }
+    }
+
+    function fillSampleBeanLabel() {
+      const input = document.getElementById('scanLabelInput');
+      if (input) {
+        input.value = '巴拿马翡翠庄园红标瑰夏 日晒 浅烘 200g 柑橘茉莉花水蜜桃 烘焙日期 2026-11-10';
+        input.focus();
+      }
+    }
+
+    async function scanBeanLabel() {
+      const input = document.getElementById('scanLabelInput');
+      const statusEl = document.getElementById('scanLabelStatus');
+      const text = input ? input.value.trim() : '';
+      if (!text) {
+        showToast('请先输入或粘贴咖啡豆袋标签描述文本');
+        return;
+      }
+      const res = await fetch('/api/beans/scan_label', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json();
+      if (!data.ok || !data.bean) {
+        if (statusEl) statusEl.textContent = `⚠️ 解析失败: ${data.error || '请检查输入内容'}`;
+        showToast(data.error || '豆袋标签解析失败');
+        return;
+      }
+      const b = data.bean;
+      if (document.getElementById('newBeanAliases')) {
+        document.getElementById('newBeanAliases').value = (b.short_aliases || []).join(', ');
+        document.getElementById('newBeanFullName').value = b.full_name || '';
+        document.getElementById('newBeanRoast').value = b.roast_level || '中浅烘焙';
+        document.getElementById('newBeanRoastDate').value = b.roast_date || '';
+        document.getElementById('newBeanInitWeight').value = b.initial_weight_g || 250;
+        document.getElementById('newBeanGrind').value = b.recommended_grind || '刻度 14.0 格';
+        document.getElementById('newBeanFlavors').value = (b.flavor_tags || []).join(', ');
+        document.getElementById('newBeanNote').value = b.golden_recipe_note || '';
+      }
+      if (statusEl) {
+        statusEl.textContent = `✅ 已自动解析入库：「${b.full_name}」| 产区: ${b.origin} | 处理法: ${b.process} | 烘焙度: ${b.roast_level} | 净重: ${b.initial_weight_g}g | ${b.freshness_stage}`;
+      }
+      await fetchState();
+      showToast(`🏷️ AI 已解析豆袋「${b.name || b.full_name}」并同步至豆仓！`);
     }
 
     async function submitTasteFeedback(recordId, rating, tasteTag) {
@@ -1918,6 +2167,8 @@
         showToast('请填写咖啡豆唤醒简称和完整名称');
         return;
       }
+      const initW = parseFloat(document.getElementById('newBeanInitWeight')?.value || '250') || 250.0;
+      const roastDate = document.getElementById('newBeanRoastDate')?.value.trim() || '';
       await fetch('/api/beans/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1925,6 +2176,9 @@
           short_aliases: aliases,
           full_name: fullName,
           roast_level: document.getElementById('newBeanRoast').value.trim(),
+          roast_date: roastDate,
+          initial_weight_g: initW,
+          remaining_weight_g: initW,
           recommended_grind: document.getElementById('newBeanGrind').value.trim(),
           flavor_tags: document.getElementById('newBeanFlavors').value.trim(),
           golden_recipe_note: document.getElementById('newBeanNote').value.trim()
@@ -1983,8 +2237,8 @@
             : `<span class="badge badge-warn">⚪ ${v.status || c.wifi_mode || '未验证'}</span>`);
 
         const previewBtnHtml = mediaUrl
-          ? `<button class="btn btn-primary" onclick="previewCameraMedia('${c.device_id}', '${mediaUrl}')">🎬 预览/拉取相机最新录制视频 (:8088)</button>`
-          : `<button class="btn" onclick="previewCameraMedia('${c.device_id}', '')">🔄 探测相机 :8088 媒体列表</button>`;
+          ? `<button class="btn btn-primary" type="button" onclick="previewCameraMedia('${c.device_id}', '${mediaUrl}')">🎬 预览相机 :8088 视频</button>`
+          : `<button class="btn" type="button" onclick="previewCameraMedia('${c.device_id}', '')">🔄 探测相机 :8088 媒体列表</button>`;
 
         return `
           <div class="camera-card">
@@ -2009,8 +2263,25 @@
 
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
               ${previewBtnHtml}
-              <button class="btn" onclick="triggerCameraShutter('${c.device_id}', 'start')">▶️ 触发开录 (DUML 02:02)</button>
-              <button class="btn btn-danger" onclick="triggerCameraShutter('${c.device_id}', 'stop')">⏹️ 停止录制</button>
+              <button class="btn btn-primary" type="button" onclick="pullLatestMediaAndKeyframes('${c.device_id}')">⬇️ 无线拉取最新 MP4 并截取 4 阶段关键帧</button>
+              <button class="btn" type="button" onclick="triggerCameraShutter('${c.device_id}', 'start')">▶️ 触发开录 (DUML 02:02)</button>
+              <button class="btn btn-danger" type="button" onclick="triggerCameraShutter('${c.device_id}', 'stop')">⏹️ 停止录制</button>
+            </div>
+
+            <!-- OsmoDesk Gimbal Preset Controls -->
+            <div class="gimbal-preset-box">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                <strong style="font-size:12.5px; color:var(--crema-bright);">🎯 OsmoDesk 云台机位预设 (DUML 04:14 · 支持口述阶段自动跟拍)</strong>
+                <span style="font-size:11px; color:var(--text-muted);">语音识别「称豆 / 刻度 / 萃取 / 出液」自动联动</span>
+              </div>
+              <div class="gimbal-btn-grid">
+                <button class="btn-gimbal" type="button" onclick="moveCameraGimbal('${c.device_id}', 'reset_center')">P0 回中</button>
+                <button class="btn-gimbal" type="button" onclick="moveCameraGimbal('${c.device_id}', 'scale_dose')">P1 电子秤称豆</button>
+                <button class="btn-gimbal" type="button" onclick="moveCameraGimbal('${c.device_id}', 'grinder_dial')">P2 磨豆刻度</button>
+                <button class="btn-gimbal" type="button" onclick="moveCameraGimbal('${c.device_id}', 'espresso_gauge')">P3 压力表油脂</button>
+                <button class="btn-gimbal" type="button" onclick="moveCameraGimbal('${c.device_id}', 'final_cup')">P4 出杯读秒</button>
+              </div>
+              <div id="gimbalStatus_${c.device_id}" role="status" aria-live="polite" style="font-size:11.5px; color:var(--text-muted); margin-top:6px;"></div>
             </div>
 
             <div id="mediaPreview_${c.device_id}"></div>
@@ -2027,6 +2298,88 @@
       `).join('');
 
       document.getElementById('onCameraScriptCode').textContent = appState.on_camera_script || '';
+    }
+
+    async function moveCameraGimbal(deviceId, preset) {
+      const statusEl = document.getElementById(`gimbalStatus_${deviceId}`);
+      if (statusEl) statusEl.textContent = `⏳ 正在向 ${deviceId} 发送云台机位预设 [${preset}]...`;
+      try {
+        const res = await fetch('/api/camera/gimbal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_id: deviceId, preset })
+        });
+        const data = await res.json();
+        await fetchState();
+        const afterEl = document.getElementById(`gimbalStatus_${deviceId}`);
+        const angleInfo = (data.pitch_deg !== undefined) ? `Pitch ${data.pitch_deg}° / Yaw ${data.yaw_deg}°` : '';
+        const hexInfo = data.duml_hex ? ` | DUML: ${data.duml_hex}` : '';
+        const transportNote = data.ok
+          ? `✅ 已下发 [${data.label || preset}] (${angleInfo})${hexInfo}`
+          : `⚠️ 已生成指令帧 [${data.label || preset}] (${angleInfo}) · ${data.error || '传输待连接'}${hexInfo}`;
+        if (afterEl) afterEl.textContent = transportNote;
+        showToast(data.ok ? `🎯 云台指令已发送：${data.label || preset}` : `🎯 云台预设帧已构造 (${data.label || preset})`);
+      } catch (err) {
+        if (statusEl) statusEl.textContent = `❌ 云台指令请求失败: ${err}`;
+      }
+    }
+
+    async function pullLatestMediaAndKeyframes(deviceId) {
+      const container = document.getElementById(`mediaPreview_${deviceId}`);
+      if (container) {
+        container.innerHTML = `<div class="media-preview-drawer">⏳ 正在从相机 <code>:8088</code> 无线拉取最新 MP4 到本地缓存并执行 FFmpeg 4 阶段关键帧抽帧...</div>`;
+      }
+      try {
+        const res = await fetch('/api/camera/pull_media', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_id: deviceId, extract_keyframes: true })
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          if (container) {
+            container.innerHTML = `<div class="media-preview-drawer" style="color:var(--accent-amber); font-size:12.5px;">⚠️ 无线拉取未完成：${escapeHtml(data.error || '相机暂未就绪或无 MP4 文件')}</div>`;
+          }
+          showToast(`⚠️ 拉取提示: ${data.error || '暂无可拉取视频'}`);
+          return;
+        }
+        const meta = data.video_metadata || {};
+        const kfs = data.keyframes || meta.keyframes || [];
+        const kfCardsHtml = kfs.map(kf => {
+          const imgHtml = kf.extracted && kf.image_path
+            ? `<img src="/api/media/keyframe?path=${encodeURIComponent(kf.image_path)}" alt="${escapeHtml(kf.stage)}" loading="lazy" />`
+            : `<div style="margin-top:6px; padding:14px 8px; text-align:center; background:#100c0a; border-radius:6px; color:var(--text-muted);">计划时间点 ${kf.timestamp_s}s (${escapeHtml(meta.fallback_reason || '待抽帧')})</div>`;
+          return `
+            <div class="keyframe-card">
+              <div style="color:var(--crema-bright); font-weight:700;">${kf.percentage}% · t=${kf.timestamp_s}s</div>
+              <div style="color:var(--latte); margin-top:2px;">${escapeHtml(kf.stage)}</div>
+              ${imgHtml}
+            </div>
+          `;
+        }).join('');
+
+        if (container) {
+          container.innerHTML = `
+            <div class="media-preview-drawer">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <strong style="font-size:13px; color:#74c69d;">✅ 已无线拉取最新 MP4 并完成 4 阶段关键帧定位</strong>
+                ${data.media_url ? `<button class="btn btn-primary" style="padding:5px 10px; font-size:12px;" type="button" onclick="triggerMediaWebhook('${deviceId}', '${data.media_url}')">⚡ 用此视频生成完整咖啡报告</button>` : ''}
+              </div>
+              <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">
+                本地路径: <code>${escapeHtml(data.local_path || '')}</code>
+                | 大小: <code>${data.size_bytes ? (data.size_bytes / (1024 * 1024)).toFixed(2) + ' MB' : '--'}</code>
+                | 分辨率/时长: <code>${escapeHtml(meta.resolution || '--')} / ${meta.duration_s ?? '--'}s</code>
+              </div>
+              <div class="keyframe-grid">${kfCardsHtml}</div>
+            </div>
+          `;
+        }
+        showToast('⬇️ 已无线拉取相机最新 MP4 并完成 4 阶段关键帧提取！');
+      } catch (err) {
+        if (container) {
+          container.innerHTML = `<div class="media-preview-drawer" style="color:var(--accent-red); font-size:12px;">无线拉取异常: ${escapeHtml(err)}</div>`;
+        }
+      }
     }
 
     async function previewCameraMedia(deviceId, fallbackUrl) {

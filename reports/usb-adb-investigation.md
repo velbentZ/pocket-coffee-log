@@ -904,3 +904,51 @@ Validation: `python3 -m unittest tests/test_camera_sta_bridge.py -v` passed all
 9 tests; full discovery passed all 26 tests. Exported script `sh -n` and
 `git diff --check` passed. No git commit was created. Boot persistence remains
 uninstalled and unverified, as documented above.
+
+## 2026-11-18 Morning USB recovery and gimbal presets
+
+At about 11:00 CST, `adb devices -l` showed USB serial `123456789ABCDEF`
+as `device` (`eagle4_hg224`). The Mac STA endpoint reported a last heartbeat
+at 01:22:58 CST. The installed agent's PID file still contained `7949`, but
+`/proc/7949` and the agent process were absent. The camera retained
+`192.168.5.93` on `wlan0`, which was down with no carrier.
+
+Started the existing agent over the explicitly selected USB transport:
+
+```sh
+adb -s 123456789ABCDEF shell 'busybox nohup /system/bin/sh /data/pocket-coffee/pocket_sta_agent.sh </dev/null >/data/pocket-coffee/console.log 2>&1 &'
+```
+
+PID `21603` ran the installed `v4-hg224-media` script. The supplicant reached
+`COMPLETED`, DHCP obtained `192.168.5.93`, and the receiver recorded a fresh
+heartbeat at 11:00:28 CST. At 11:04:26 CST the receiver still reported verified
+heartbeats from that IP, and USB ADB still enumerated as `device`.
+
+The Mac bridge now checks Pocket 4 Pro USB ADB before attempting legacy STA
+provisioning. When invoked, it starts an installed agent if the PID file does
+not point to the expected script, and checks for that process after launch.
+With the live agent running, this path returned `already_running` and left
+PID `21603` in place. The launch branch and stale or reused PID handling were
+also exercised with local shell fixtures. The existing USB probe invokes this
+method; it does not itself monitor reconnects or install on-camera boot
+persistence. No reboot or USB configuration change was made.
+
+`/sys/class/power_supply/` was empty, and `dumpsys battery` reported
+`Can't find service: battery`. No recording state source was verified. The
+live endpoint reported `battery_percent: null` and
+`recording_state: "unknown"`. The checked-in `v5-hg224-telemetry` script
+reads a valid sysfs Battery capacity if available and sends JSON `null`
+otherwise. The receiver accepts a battery reading or optional recording
+observation from a matching STA peer. The new script passed shell syntax
+checks locally and on the camera; the live camera still runs the existing
+`v4-hg224-media` script.
+
+The five brewing presets use DUML `04:14`, including the zero-angle center
+preset. The bridge tries USB interface 4 / endpoint `0x04` and UDP port
+`9004` independently, and logs completed USB writes and local UDP sends
+separately from camera movement. Packet encoding and dispatch were verified
+in unit tests. No live gimbal or recording command was sent.
+
+Validation: `python3 -m unittest tests/test_camera_sta_bridge.py -v` passed
+all 17 tests. The checked-in and embedded scripts match, and
+`git diff --check` passed. No git commit was created.

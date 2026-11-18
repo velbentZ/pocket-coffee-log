@@ -1,5 +1,6 @@
 """Unit and HTTP integration tests for Pocket Coffee Studio pipeline enhancements."""
 
+from datetime import datetime, timedelta
 import json
 import os
 import subprocess
@@ -8,10 +9,10 @@ import threading
 import unittest
 from http.client import HTTPConnection
 from http.server import HTTPServer
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
-from core.bean_equipment_store import BeanAndEquipmentManager
+from core.bean_equipment_store import BeanAndEquipmentManager, compute_freshness_metrics
 from core.camera_sta_bridge import CameraInternalBridge
 from core.multimodal_vision import MultimodalVisionEngine
 from core.notifier import NotificationManager
@@ -237,6 +238,168 @@ class TestCoffeeServerAndComparisonPipeline(unittest.TestCase):
         self.assertIn("sweetness", fd)
         self.assertGreater(fd["sweetness"]["delta"], 0.0)
         self.assertTrue(len(cmp_res["insights"]) >= 1)
+
+    def test_deduct_bean_dose_and_freshness_lifecycle(self) -> None:
+        today = datetime.now().date()
+        # 1. Verify 3 freshness stages (0-4d Degassing, 5-28d Peak Window, >28d Aging)
+        d2, s2 = compute_freshness_metrics((today - timedelta(days=2)).isoformat(), reference_date=today)
+        self.assertEqual(d2, 2)
+        self.assertEqual(s2, "养豆期 (Degassing)")
+
+        d12, s12 = compute_freshness_metrics((today - timedelta(days=12)).isoformat(), reference_date=today)
+        self.assertEqual(d12, 12)
+        self.assertEqual(s12, "黄金赏味期 (Peak Window)")
+
+        d35, s35 = compute_freshness_metrics((today - timedelta(days=35)).isoformat(), reference_date=today)
+        self.assertEqual(d35, 35)
+        self.assertEqual(s35, "风味衰退期 (Aging)")
+
+        # 2. Deduct dose on seeded bean and verify clamping + bag_status="finished"
+        peak_roast = (today - timedelta(days=10)).isoformat()
+        self.bean_manager.add_or_update_bean(
+            {
+                "bean_id": "bean-test-lot",
+                "name": "测试瑰夏批次",
+                "full_name": "巴拿马 测试瑰夏 日晒",
+                "short_aliases": ["测试瑰夏"],
+                "roast_date": peak_roast,
+                "initial_weight_g": 200.0,
+                "remaining_weight_g": 30.0,
+                "bag_status": "active",
+                "brew_count": 0,
+            }
+        )
+        updated = self.bean_manager.deduct_bean_dose("测试瑰夏", 18.5)
+        self.assertIsNotNone(updated)
+        self.assertAlmostEqual(updated["remaining_weight_g"], 11.5)
+        self.assertEqual(updated["brew_count"], 1)
+        self.assertEqual(updated["days_off_roast"], 10)
+        self.assertEqual(updated["freshness_stage"], "黄金赏味期 (Peak Window)")
+        self.assertEqual(updated["bag_status"], "active")
+
+        # Deduct beyond remaining -> clamped at 0.0 and marked finished
+        depleted = self.bean_manager.deduct_bean_dose("bean-test-lot", 25.0)
+        self.assertIsNotNone(depleted)
+        self.assertEqual(depleted["remaining_weight_g"], 0.0)
+        self.assertEqual(depleted["brew_count"], 2)
+        self.assertEqual(depleted["bag_status"], "finished")
+
+        # Unknown bean returns None
+        self.assertIsNone(self.bean_manager.deduct_bean_dose("不存在的咖啡豆", 18.0))
+
+    def test_parse_bean_label_text_and_scan_endpoint(self) -> None:
+        label = "巴拿马翡翠庄园红标瑰夏 日晒 浅烘 200g 柑橘茉莉花水蜜桃 烘焙日期 2026-11-10"
+        parsed = self.bean_manager.parse_bean_label_text(label)
+        self.assertIn("巴拿马", parsed["origin"])
+        self.assertIn("日晒", parsed["process"])
+        self.assertEqual(parsed["roast_level"], "浅度烘焙")
+        self.assertEqual(parsed["initial_weight_g"], 200.0)
+        self.assertEqual(parsed["remaining_weight_g"], 200.0)
+        self.assertEqual(parsed["roast_date"], "2026-11-10")
+        self.assertIn("柑橘", parsed["flavor_tags"])
+        self.assertIn("茉莉花", parsed["flavor_tags"])
+        self.assertIn("水蜜桃", parsed["flavor_tags"])
+        self.assertTrue(parsed["name"])
+        self.assertTrue(parsed["full_name"])
+
+        # HTTP endpoint POST /api/beans/scan_label
+        status, api_res = self.request_json(
+            "POST",
+            "/api/beans/scan_label",
+            {"text": "埃塞俄比亚耶加雪菲果丁丁 水洗 中浅烘 250g 柠檬佛手柑红茶 烘焙日期 2026-11-12"},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(api_res["ok"])
+        bean = api_res["bean"]
+        self.assertIn("埃塞俄比亚", bean["origin"])
+        self.assertIn("水洗", bean["process"])
+        self.assertEqual(bean["roast_level"], "中浅烘焙")
+        self.assertEqual(bean["initial_weight_g"], 250.0)
+        self.assertEqual(bean["roast_date"], "2026-11-12")
+        self.assertIn("柠檬", bean["flavor_tags"])
+        self.assertIn("佛手柑", bean["flavor_tags"])
+        self.assertTrue(any(b["bean_id"] == bean["bean_id"] for b in api_res["bean_library"]["beans"]))
+
+        bad_status, bad_res = self.request_json("POST", "/api/beans/scan_label", {"text": "   "})
+        self.assertEqual(bad_status, 400)
+        self.assertFalse(bad_res["ok"])
+
+    def test_voice_auto_deducts_inventory_and_moves_gimbal_presets(self) -> None:
+        before_huakui = self.bean_manager.match_bean_by_text("花魁")
+        self.assertIsNotNone(before_huakui)
+        initial_rem = before_huakui["remaining_weight_g"]
+        initial_count = before_huakui["brew_count"]
+
+        mock_gimbal = MagicMock(side_effect=lambda device_id="pocket4p", preset="reset_center", **kw: {
+            "ok": True,
+            "device_id": device_id,
+            "preset": preset,
+        })
+        with patch.object(self.camera_bridge, "move_gimbal_preset", mock_gimbal, create=True):
+            self.voice_manager.start_session("pocket4p", "我要开始制作咖啡，先给花魁称豆 18.5 克")
+            self.voice_manager.append_utterance("独立磨豆机 Niche Zero 刻度 14.5 格")
+            self.voice_manager.append_utterance("开始意式浓缩萃取，压力 9.2 bar")
+            out = self.voice_manager.append_utterance("29 秒出液 37 克，咖啡制作完成")
+
+        called_presets = [c.kwargs.get("preset") or c.args[1] for c in mock_gimbal.call_args_list]
+        self.assertEqual(
+            called_presets,
+            ["scale_dose", "grinder_dial", "espresso_gauge", "final_cup"],
+        )
+        self.assertTrue(out["auto_stopped"])
+        self.assertIsNotNone(out["bean_inventory"])
+        self.assertAlmostEqual(out["bean_inventory"]["remaining_weight_g"], initial_rem - 18.5)
+        self.assertEqual(out["bean_inventory"]["brew_count"], initial_count + 1)
+
+    def test_camera_gimbal_and_pull_media_endpoints(self) -> None:
+        # Configure loopback LAN IP so UDP DUML frame dispatches cleanly in test sandbox
+        state = self.camera_bridge.load_state()
+        state["cameras"]["pocket4p"]["lan_ip"] = "127.0.0.1"
+        self.camera_bridge.save_state(state)
+
+        for preset in ("reset_center", "scale_dose", "grinder_dial", "espresso_gauge", "final_cup"):
+            status, g_res = self.request_json(
+                "POST",
+                "/api/camera/gimbal",
+                {"device_id": "pocket4p", "preset": preset},
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(g_res["ok"])
+            self.assertEqual(g_res["preset"], preset)
+            self.assertTrue(g_res.get("duml_hex"))
+
+        bad_status, bad_res = self.request_json(
+            "POST",
+            "/api/camera/gimbal",
+            {"device_id": "pocket4p", "preset": "nonexistent_preset"},
+        )
+        self.assertEqual(bad_status, 400)
+        self.assertFalse(bad_res["ok"])
+
+        # Test POST /api/camera/pull_media with mocked pull_latest_media returning a local MP4
+        sample_mp4 = os.path.join(self.data_dir, "DJI_PULL_TEST.MP4")
+        with open(sample_mp4, "wb") as f:
+            f.write(b"\x00\x00\x00\x1cftypisom" + b"\x00" * 64)
+
+        mock_pull_res = {
+            "ok": True,
+            "device_id": "pocket4p",
+            "local_path": sample_mp4,
+            "size_bytes": 92,
+            "partial": False,
+            "media_url": "http://192.168.5.93:8088/DJI_001/DJI_PULL_TEST.MP4",
+        }
+        with patch.object(self.camera_bridge, "pull_latest_media", create=True, return_value=mock_pull_res):
+            p_status, p_res = self.request_json(
+                "POST",
+                "/api/camera/pull_media",
+                {"device_id": "pocket4p", "extract_keyframes": True},
+            )
+        self.assertEqual(p_status, 200)
+        self.assertTrue(p_res["ok"])
+        self.assertEqual(p_res["local_path"], sample_mp4)
+        self.assertIn("video_metadata", p_res)
+        self.assertEqual(len(p_res["keyframes"]), 4)
 
 
 if __name__ == "__main__":

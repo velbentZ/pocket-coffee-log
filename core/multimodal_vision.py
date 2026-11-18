@@ -35,6 +35,13 @@ KEYFRAME_PLAN: List[Tuple[float, str, str]] = [
     (0.90, "yield_timer", "出杯液重与读秒终点 (Yield & Timer OCR)"),
 ]
 
+STAGE_TO_GIMBAL_PRESET: Dict[str, str] = {
+    "scale_dose": "scale_dose",
+    "grinder_dial": "grinder_dial",
+    "pressure_crema": "espresso_gauge",
+    "yield_timer": "final_cup",
+}
+
 DEFAULT_FALLBACK_TIMESTAMPS = [12.5, 28.0, 64.0, 92.0]
 
 
@@ -214,6 +221,7 @@ class MultimodalVisionEngine:
                         "percentage": pct_int,
                         "fraction": pct,
                         "stage_key": stage_slug,
+                        "gimbal_preset": STAGE_TO_GIMBAL_PRESET.get(stage_slug, "reset_center"),
                         "stage": stage_label,
                         "timestamp_s": ts,
                         "image_path": out_path if extracted_ok else None,
@@ -242,6 +250,7 @@ class MultimodalVisionEngine:
                         "percentage": pct_int,
                         "fraction": pct,
                         "stage_key": stage_slug,
+                        "gimbal_preset": STAGE_TO_GIMBAL_PRESET.get(stage_slug, "reset_center"),
                         "stage": stage_label,
                         "timestamp_s": ts,
                         "image_path": None,
