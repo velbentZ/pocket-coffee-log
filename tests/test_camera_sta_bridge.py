@@ -323,6 +323,76 @@ echo launched >> "$base/launches"
         self.assertEqual(camera['adb_status']['serial'], '123456789ABCDEF')
         self.assertEqual(camera['recording_requested_action'], 'stop')
 
+    def test_agent_recovers_disconnected_supplicant(self):
+        wlan = Path(self.temp.name, "wlan0")
+        wlan.mkdir()
+        ensure_sta = ON_CAMERA_AGENT_SCRIPT.split("ensure_sta() {", 1)[1].split("json_escape()", 1)[0]
+        ensure_sta = "ensure_sta() {" + ensure_sta.replace("/sys/class/net/wlan0", str(wlan))
+        for scenario, expected in (
+            ("missing", ["kill", "clear", "start"]),
+            ("failing", ["reassociate", "reassociate", "kill", "clear", "start"]),
+            ("healthy", ["reassociate", "reassociate"]),
+            ("encoded", ["reassociate", "reassociate"]),
+            ("completed", []),
+        ):
+            with self.subTest(scenario=scenario):
+                harness = r"""
+BB=bb
+exec 3>&1
+bb() {
+    case "$1" in
+        timeout) shift 3; "$@";;
+        pidof) return 0;;
+        killall) echo kill;;
+        udhcpc) :;;
+        *) "$@";;
+    esac
+}
+ip() { :; }
+log() { :; }
+rm() { echo clear; }
+chown() { :; }
+chmod() { :; }
+restorecon() { :; }
+wpa_supplicant() {
+    [ "$*" = "-B -i wlan0 -c $WPA_CONF -D nl80211" ] && echo start >&3
+}
+wpa_cli() {
+    case "$5" in
+        status)
+            if [ "$SCENARIO" = completed ]; then echo wpa_state=COMPLETED
+            else echo wpa_state=DISCONNECTED; fi;;
+        list_networks)
+            echo 'network id / ssid / bssid / flags'
+            if [ "$SCENARIO" = missing ]; then
+                printf '0\t%s guest\tany\t\n' "$WIFI_SSID"
+            elif [ "$SCENARIO" = encoded ]; then
+                printf '0\t%s\tany\t\n' '\xe4\xbd\xa0'
+            else
+                printf '0\t%s\tany\t\n' "$WIFI_SSID"
+            fi;;
+        get_network) printf %s e4bda0;;
+        reassociate)
+            echo reassociate >&3
+            if [ "$SCENARIO" = failing ]; then echo FAIL; else echo OK; fi;;
+    esac
+}
+WIFI_SSID='coffee shop'
+WPA_CONF="$BASE_DIR/pocket_sta.conf"
+if [ "$SCENARIO" = encoded ]; then
+    WIFI_SSID='\u4f60'
+    printf 'network={\n ssid=e4bda0\n}\n' > "$WPA_CONF"
+fi
+SERVER_IP=192.168.5.84
+"""
+                calls = "ensure_sta; :" if scenario == "missing" else "ensure_sta; ensure_sta; :"
+                result = subprocess.run(
+                    ["sh"], input=harness + ensure_sta + calls, text=True, capture_output=True,
+                    env={**os.environ, "BASE_DIR": self.temp.name, "SCENARIO": scenario},
+                    check=True, timeout=5,
+                )
+                self.assertEqual(result.stdout.splitlines(), expected)
+
     def run_agent_functions(self, commands):
         functions = ON_CAMERA_AGENT_SCRIPT.split('json_escape() {', 1)[1].split("log 'Starting STA agent", 1)[0]
         shell = 'json_escape() {' + functions + r"""

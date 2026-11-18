@@ -242,6 +242,7 @@ if [ "${RUN_ONCE:-0}" != 1 ]; then
 fi
 log() { echo "$(date) $*" >> "${AGENT_LOG:-/tmp/pocket_sta_agent.log}"; }
 
+WPA_FAILS=0
 ensure_sta() {
     # DJI powers down the PCIe Wi-Fi device while USB remains available.
     if [ ! -d /sys/class/net/wlan0 ]; then
@@ -251,7 +252,7 @@ ensure_sta() {
     ip link set wlan0 up || return 1
     CURRENT_IP=$(ip -4 addr show wlan0 | "$BB" awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}')
     # An existing lease on the server subnet is enough; do not disturb firmware Wi-Fi.
-    case "$CURRENT_IP" in "${STA_PREFIX:-${SERVER_IP%.*}.}"*) return 0;; esac
+    case "$CURRENT_IP" in "${STA_PREFIX:-${SERVER_IP%.*}.}"*) WPA_FAILS=0; return 0;; esac
     WPA_DIR=""
     for SOCKET_DIR in /tmp/wpa_supplicant /data/misc/wifi/sockets "$CTRL_DIR"; do
         STATUS=$("$BB" timeout -t 2 wpa_cli -p "$SOCKET_DIR" -i wlan0 status 2>/dev/null)
@@ -262,15 +263,58 @@ ensure_sta() {
     done
     if ! printf '%s' "$STATUS" | "$BB" grep -q 'wpa_state=COMPLETED'; then
         if [ -n "$WPA_DIR" ]; then
-            wpa_cli -p "$WPA_DIR" -i wlan0 reassociate >/dev/null 2>&1
-        elif ! "$BB" pidof wpa_supplicant >/dev/null 2>&1; then
-            chown wifi:wifi "$WPA_CONF"
-            chmod 600 "$WPA_CONF"
-            restorecon "$WPA_CONF" 2>/dev/null
-            wpa_supplicant -B -i wlan0 -c "$WPA_CONF" -D nl80211 >> "$BASE_DIR/agent.log" 2>&1
+            NETWORKS=$("$BB" timeout -t 2 wpa_cli -p "$WPA_DIR" -i wlan0 list_networks 2>/dev/null)
+            NETWORK_IDS=$(printf '%s\n' "$NETWORKS" | "$BB" awk -F '\t' '$1 ~ /^[0-9]+$/ {print $1}')
+            HAS_NETWORK=0
+            if [ -n "$WIFI_SSID" ] && printf '%s\n' "$NETWORKS" |
+                POCKET_WIFI_SSID="$WIFI_SSID" "$BB" awk -F '\t' '
+                    $1 ~ /^[0-9]+$/ && $2 == ENVIRON["POCKET_WIFI_SSID"] {found=1}
+                    END {exit !found}
+                '; then
+                HAS_NETWORK=1
+            elif [ -n "$NETWORK_IDS" ]; then
+                # HG224 lists non-ASCII SSIDs as escaped bytes; its Pocket config
+                # stores the same SSID in hex, as returned by get_network.
+                CONF_SSID=$("$BB" awk -F= '/^[[:space:]]*ssid=[0-9a-fA-F]+[[:space:]]*$/ {
+                    sub(/[[:space:]]+$/, "", $2); print tolower($2); exit
+                }' "$WPA_CONF" 2>/dev/null)
+                if [ -n "$CONF_SSID" ]; then
+                    for NETWORK_ID in $NETWORK_IDS; do
+                        NETWORK_SSID=$("$BB" timeout -t 2 wpa_cli -p "$WPA_DIR" -i wlan0 get_network "$NETWORK_ID" ssid 2>/dev/null)
+                        if [ "$NETWORK_SSID" = "$CONF_SSID" ]; then
+                            HAS_NETWORK=1
+                            break
+                        fi
+                    done
+                fi
+            fi
+            if [ "$HAS_NETWORK" -eq 1 ]; then
+                if [ "$("$BB" timeout -t 2 wpa_cli -p "$WPA_DIR" -i wlan0 reassociate 2>/dev/null)" = OK ]; then
+                    WPA_FAILS=0
+                else
+                    WPA_FAILS=$((WPA_FAILS + 1))
+                fi
+            else
+                WPA_FAILS=2
+            fi
+        else
+            WPA_FAILS=$((WPA_FAILS + 1))
         fi
+        if [ "$WPA_FAILS" -ge 2 ]; then
+            log "Restarting stale STA supplicant with the Pocket Wi-Fi config"
+            "$BB" killall wpa_supplicant 2>/dev/null
+            rm -rf /tmp/wpa_supplicant /data/misc/wifi/sockets
+        elif [ -n "$WPA_DIR" ] || "$BB" pidof wpa_supplicant >/dev/null 2>&1; then
+            return 1
+        fi
+        WPA_FAILS=0
+        chown wifi:wifi "$WPA_CONF"
+        chmod 600 "$WPA_CONF"
+        restorecon "$WPA_CONF" 2>/dev/null
+        wpa_supplicant -B -i wlan0 -c "$WPA_CONF" -D nl80211 >> "$BASE_DIR/agent.log" 2>&1
         return 1
     fi
+    WPA_FAILS=0
     DHCP_PID="$BASE_DIR/udhcpc.pid"
     if ! [ -r "$DHCP_PID" ] || ! kill -0 "$(cat "$DHCP_PID")" 2>/dev/null; then
         "$BB" udhcpc -b -i wlan0 -p "$DHCP_PID" -s /system/bin/udhcpc.conf.sh -t 5 >> "$BASE_DIR/agent.log" 2>&1

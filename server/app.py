@@ -287,29 +287,32 @@ def _camera_voice_chunk(body):
     if sys.byteorder != "little":
         samples.byteswap()
     transcript, command = "", "none"
-    peak = max(max(samples), -min(samples)) if samples else 0
-    if peak >= 160:
-        # Check short windows so a brief word is not averaged into the entire clip.
-        speech_energy = any(
-            sum(sample * sample for sample in window) >= len(window) * 50**2
-            for window in (samples[i:i + 800] for i in range(0, len(samples), 800))
-        )
-        if speech_energy:
+    if samples:
+        dc_offset = sum(samples) / len(samples)
+        centered = [sample - dc_offset for sample in samples]
+        amplitudes = sorted(map(abs, centered))
+        p99_abs = amplitudes[(99 * len(amplitudes) - 1) // 100]
+        if p99_abs < 2000:
+            # Ignore sparse PulseAudio clipping before measuring speech or setting gain.
+            spike_threshold = max(8000, 4 * p99_abs)
+            centered = [0 if abs(sample) > spike_threshold else sample for sample in centered]
+
+        peak_clean = max(map(abs, centered))
+        # Check 50 ms windows so a brief word is not averaged into the entire clip.
+        if peak_clean >= 25 and any(
+            sum(sample * sample for sample in window) >= len(window) * 6**2
+            for window in (centered[i:i + 800] for i in range(0, len(centered), 800))
+        ):
+            gain = min(80.0, 16000.0 / peak_clean) if peak_clean < 12000 else 1.0
+            normalized = array("h", (
+                max(-32767, min(32767, round(sample * gain))) for sample in centered
+            ))
+            if sys.byteorder != "little":
+                normalized.byteswap()
             with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
-                if peak < 3000:
-                    dc_offset = sum(samples) / len(samples)
-                    centered_peak = max(max(samples) - dc_offset, dc_offset - min(samples))
-                    if not centered_peak:
-                        return {"ok": True, "transcript": "", "command": "none", "action_token": "ACTION:NONE"}
-                    gain = min(12.0, 8000 / centered_peak)
-                    normalized = array("h", (round((sample - dc_offset) * gain) for sample in samples))
-                    if sys.byteorder != "little":
-                        normalized.byteswap()
-                    with wave.open(audio, "wb") as wav:
-                        wav.setparams((1, 2, 16000, 0, "NONE", ""))
-                        wav.writeframes(normalized.tobytes())
-                else:
-                    audio.write(raw)
+                with wave.open(audio, "wb") as wav:
+                    wav.setparams((1, 2, 16000, 0, "NONE", ""))
+                    wav.writeframes(normalized.tobytes())
                 audio.flush()
                 transcript = vision_engine.extract_audio_and_transcribe(audio.name).strip()
             if transcript:

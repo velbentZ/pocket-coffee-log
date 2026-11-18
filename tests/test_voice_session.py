@@ -17,7 +17,7 @@ import wave
 from core.camera_sta_bridge import CameraInternalBridge, ON_CAMERA_AGENT_SCRIPT
 from core.notifier import NotificationManager
 from core.store import CoffeeStore
-from daemon.voice_session import VoiceWakeupSessionManager
+from daemon.voice_session import VoiceWakeupSessionManager, _has_meaningful_brewing_speech
 from server import app
 
 
@@ -79,11 +79,59 @@ class CameraVoiceTests(unittest.TestCase):
         def recognize(path):
             with wave.open(path, "rb") as wav:
                 self.assertEqual(wav.getnframes(), 64000)
-                self.assertEqual(struct.unpack("<hh", wav.readframes(2)), (2400, -2400))
+                self.assertEqual(struct.unpack("<hh", wav.readframes(2)), (16000, -16000))
             return "开始录制"
 
         app.vision_engine.extract_audio_and_transcribe.side_effect = recognize
         self.assertEqual(self.post(wav_payload(200, seconds=4, offset=40))["command"], "start")
+
+    def check_weak_speech_reaches_asr(self, with_click):
+        # ±120 on one sample in 64: peak 120, RMS 15, plus a DC offset.
+        centered = [120, -120] + [0] * 126
+        samples = [sample + 20 for sample in centered * 375]
+        if with_click:
+            samples[12000:12200] = [-32768, 32767] * 100
+        output = io.BytesIO()
+        with wave.open(output, "wb") as wav:
+            wav.setparams((1, 2, 16000, 0, "NONE", ""))
+            wav.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+
+        def recognize(path):
+            with wave.open(path, "rb") as wav:
+                frames = wav.readframes(wav.getnframes())
+            clean = struct.unpack(f"<{len(samples)}h", frames)
+            self.assertGreater(clean[0], 8000)
+            self.assertLess(clean[1], -8000)
+            if with_click:
+                self.assertEqual(set(clean[12000:12200]), {0})
+            return "开始录制"
+
+        app.vision_engine.extract_audio_and_transcribe.side_effect = recognize
+        result = app._camera_voice_chunk(dict(
+            device_id="pocket4p", recording_active=False,
+            wav_b64=base64.b64encode(output.getvalue()).decode(),
+        ))
+        self.assertEqual(result["action_token"], "ACTION:START")
+
+    def test_weak_speech_reaches_asr(self):
+        self.check_weak_speech_reaches_asr(with_click=False)
+
+    def test_weak_speech_with_clipping_burst_reaches_asr(self):
+        self.check_weak_speech_reaches_asr(with_click=True)
+
+    def test_short_camera_commands(self):
+        for text in ("开始", "我要开始", "开始吧", "开始啦", "开录", "开拍",
+                     "制作咖啡", "做咖啡", "冲咖啡", "萃咖啡", "开始计时"):
+            with self.subTest(wake=text):
+                self.assertTrue(self.manager.matches_wake_word(text))
+        for text in ("结束", "暂停", "停下", "录好了", "拍好了", "完成", "可以了", "好了"):
+            with self.subTest(stop=text):
+                self.assertTrue(self.manager.matches_stop_word(text))
+                self.assertFalse(self.manager.matches_wake_word(text))
+        self.assertFalse(self.manager.matches_wake_word("我要开始，结束录制"))
+        self.assertFalse(_has_meaningful_brewing_speech("我要开始，做好了"))
+        self.assertFalse(_has_meaningful_brewing_speech("开始啦，暂停，可以了"))
+        self.assertTrue(_has_meaningful_brewing_speech("开始吧，粉量18克，好了"))
 
     def test_wav_length_limits(self):
         self.assertEqual(self.post(wav_payload(0, seconds=10))["command"], "none")
@@ -91,16 +139,16 @@ class CameraVoiceTests(unittest.TestCase):
             app._camera_voice_chunk(wav_payload(0, seconds=11))
 
     def test_split_wake_and_stop(self):
-        self.assertEqual(self.say("我要开始")["command"], "none")
+        self.assertEqual(self.say("打开")["command"], "none")
         self.assertEqual(self.say("鹿制")["command"], "start")
         self.assertEqual(self.say("请停止", True)["command"], "none")
         self.assertEqual(self.say("路制", True)["command"], "stop")
 
     def test_old_or_other_camera_chunk_does_not_complete_command(self):
         handle = self.manager.handle_camera_transcript
-        self.assertEqual(handle("pocket3", "开始", False), "none")
+        self.assertEqual(handle("pocket3", "打开", False), "none")
         self.assertEqual(handle("pocket4p", "录制", False), "none")
-        self.assertEqual(handle("pocket4p", "开始", False), "none")
+        self.assertEqual(handle("pocket4p", "打开", False), "none")
         self.manager._last_camera_chunk["at"] -= timedelta(seconds=7)
         self.assertEqual(handle("pocket4p", "录制", False), "none")
 

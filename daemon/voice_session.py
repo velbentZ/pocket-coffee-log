@@ -39,7 +39,16 @@ WAKE_KEYWORDS = [
     "打开录制",
     "开启录制",
     "开始录",
+    "我要开始",
+    "开始吧",
+    "开始啦",
+    "开录",
+    "开拍",
+    "做咖啡",
+    "冲咖啡",
+    "萃咖啡",
 ]
+SHORT_WAKE_WORD = "开始"
 STOP_KEYWORDS = [
     "咖啡制作完成",
     "制作完成",
@@ -54,11 +63,13 @@ STOP_KEYWORDS = [
     "结束录",
     "不录了",
     "录完了",
-    "停止",
-    "结束",
     "咖啡做好了",
     "做好了",
+    "录好了",
+    "拍好了",
 ]
+# Short stop commands match whole utterances so narration can still contain them.
+SHORT_STOP_KEYWORDS = ["停止", "结束", "暂停", "停下", "完成", "可以了", "好了"]
 
 GIMBAL_STAGE_KEYWORDS = [
     ("scale_dose", ["称重", "称豆", "克豆"]),
@@ -83,8 +94,8 @@ def _normalize_command(text: str) -> str:
 
 def _has_meaningful_brewing_speech(text: str) -> bool:
     normalized = _normalize_command(text)
-    commands = sorted({_normalize_command(word) for word in WAKE_KEYWORDS + STOP_KEYWORDS},
-                      key=len, reverse=True)
+    commands = WAKE_KEYWORDS + [SHORT_WAKE_WORD] + STOP_KEYWORDS + SHORT_STOP_KEYWORDS
+    commands = sorted({_normalize_command(word) for word in commands}, key=len, reverse=True)
     return bool(re.sub("|".join(map(re.escape, commands)), "", normalized).strip())
 
 
@@ -172,14 +183,16 @@ class VoiceWakeupSessionManager:
     @staticmethod
     def matches_wake_word(text: str) -> bool:
         normalized = _normalize_command(text)
-        return any(_normalize_command(word) in normalized for word in WAKE_KEYWORDS)
+        if VoiceWakeupSessionManager.matches_stop_word(text):
+            return False
+        return (normalized.startswith(SHORT_WAKE_WORD) or normalized.endswith(SHORT_WAKE_WORD)
+                or any(_normalize_command(word) in normalized for word in WAKE_KEYWORDS))
 
     @staticmethod
     def matches_stop_word(text: str) -> bool:
         normalized = _normalize_command(text)
-        return normalized in ("停止", "结束") or any(
-            _normalize_command(word) in normalized
-            for word in STOP_KEYWORDS if word not in ("停止", "结束")
+        return normalized in SHORT_STOP_KEYWORDS or any(
+            _normalize_command(word) in normalized for word in STOP_KEYWORDS
         )
 
     @_serialized
