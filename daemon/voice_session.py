@@ -21,8 +21,31 @@ from core.registry import global_event_bus
 from core.store import CoffeeStore
 
 
-WAKE_KEYWORDS = ["我要开始制作咖啡", "开始制作咖啡", "开始做咖啡", "开始萃咖啡", "开始冲咖啡"]
-STOP_KEYWORDS = ["咖啡制作完成", "制作完成", "制作结束", "录制结束", "停止录制", "做好了"]
+WAKE_KEYWORDS = [
+    "我要开始制作咖啡",
+    "开始制作咖啡",
+    "开始做咖啡",
+    "开始萃咖啡",
+    "开始冲咖啡",
+    "开始录制",
+    "开始录像",
+    "开始拍摄",
+    "打开录制",
+]
+STOP_KEYWORDS = [
+    "咖啡制作完成",
+    "制作完成",
+    "制作结束",
+    "录制结束",
+    "结束录制",
+    "停止录制",
+    "暂停录制",
+    "停止录像",
+    "结束录像",
+    "停止",
+    "结束",
+    "做好了",
+]
 
 GIMBAL_STAGE_KEYWORDS = [
     ("scale_dose", ["称重", "称豆", "克豆"]),

@@ -1300,21 +1300,24 @@
     <section class="voice-bar">
       <div class="voice-info">
         <h3>🎙️ 零人工干预 · 语音自动启停录制流水线</h3>
-        <p id="voiceEventDesc">说出「我要开始制作咖啡」相机通过局域网 STA 自动开录；边做边口述参数，说「制作完成」自动停录并生成报告推送手机。</p>
+        <p id="voiceEventDesc">说出「我要开始制作咖啡 / 开始录制」相机自动开录；边做边口述参数，说「停止录制 / 结束录制 / 做好了」自动暂停录制并生成报告。</p>
       </div>
       <div class="voice-input-group">
         <input
           id="voiceInput"
           class="voice-input"
           type="text"
-          placeholder="输入或点击麦克风口述，例如：我要开始制作咖啡，今天豆子用埃塞花魁18克，独立磨豆机Niche刻度15，意式浓缩9bar萃28秒出液36克，制作完成"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();sendVoiceUtterance(false);}"
+          placeholder="点击「🎤 开启语音监听」直接说话，或在此输入指令：如「开始制作咖啡」→ 口述参数 →「停止录制」"
         />
-        <button class="btn" onclick="startBrowserSpeech()" title="使用麦克风实时语音识别">🎤 麦克风语音</button>
-        <button class="btn btn-primary" onclick="sendVoiceUtterance()">发送语音 / 自动解析生成</button>
+        <button class="btn" id="btnMicListen" type="button" onclick="startBrowserSpeech()" title="开启持续麦克风语音控制（说开始录制/停止录制）">🎤 开启语音监听</button>
+        <button class="btn btn-primary" type="button" onclick="sendVoiceUtterance(false)">🗣️ 发送语音指令</button>
+        <button class="btn btn-danger" id="btnStopAndReport" type="button" onclick="manualVoiceStopAndReport()" title="立即停止相机录制并生成本次咖啡报告">⏹️ 停止录制并生成报告</button>
       </div>
-      <div style="display:flex; gap:8px;">
-        <button class="btn" onclick="triggerQuickDemo('complete')">✨ 模拟完整意式录制</button>
-        <button class="btn btn-danger" onclick="triggerQuickDemo('incomplete')">⚠️ 模拟缺参数录制(测试手机提醒)</button>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn" type="button" onclick="triggerVoiceWakeStart()">🔴 语音唤醒开始录制</button>
+        <button class="btn" type="button" onclick="triggerQuickDemo('complete')">✨ 模拟完整意式录制</button>
+        <button class="btn btn-danger" type="button" onclick="triggerQuickDemo('incomplete')">⚠️ 模拟缺参数录制(测试手机提醒)</button>
       </div>
     </section>
 
@@ -2679,28 +2682,80 @@
       renderAll();
     }
 
-    async function sendVoiceUtterance() {
+    async function sendVoiceUtterance(autoStopIfSingleShot = false) {
       const input = document.getElementById('voiceInput');
       const text = input.value.trim();
       if (!text) {
         showToast('请先输入或说出咖啡制作语音内容');
         return;
       }
+      if (autoStopIfSingleShot) {
+        const res = await fetch('/api/voice/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transcript: text,
+            reason: '语音流识别完成，相机自动停录并生成咖啡制作报告'
+          })
+        });
+        const data = await res.json();
+        input.value = '';
+        if (data.record) {
+          currentRecordId = data.record.id;
+        }
+        await fetchState();
+        showToast('☕️ 已自动完成视频/语音解析并生成咖啡制作报告！');
+        return;
+      }
+
+      const res = await fetch('/api/voice/utterance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json();
+      input.value = '';
+      if (data.auto_stopped && data.record) {
+        currentRecordId = data.record.id;
+        await fetchState();
+        switchTab('reports');
+        showToast(`⏹️ 已识别到结束指令，自动停止录制并生成报告 [${data.record.id}]！`);
+      } else {
+        await fetchState();
+        const sess = data.session || {};
+        if ((sess.transcript_chunks || []).length <= 1) {
+          showToast(`🔴 已语音唤醒 ${sess.camera_model || '相机'} 开始录制！请继续口述参数，说「停止录制 / 结束录制」自动生成报告`);
+        } else {
+          showToast(`🎙️ 已记录过程语音：「${text.slice(0, 28)}」· 说「停止录制」自动结束并出报告`);
+        }
+      }
+    }
+
+    async function manualVoiceStopAndReport() {
+      const input = document.getElementById('voiceInput');
+      const extraText = input ? input.value.trim() : '';
+      if (extraText) {
+        await fetch('/api/voice/utterance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: extraText })
+        });
+        input.value = '';
+      }
       const res = await fetch('/api/voice/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          transcript: text,
-          reason: '语音流识别完成，相机自动停录并生成咖啡制作报告'
+          reason: '手动/语音触发停止录制，自动生成本次咖啡制作报告'
         })
       });
       const data = await res.json();
-      input.value = '';
       if (data.record) {
         currentRecordId = data.record.id;
       }
       await fetchState();
-      showToast('☕️ 已自动完成视频/语音解析并推送手机报告！');
+      switchTab('reports');
+      showToast(`⏹️ 已停止相机录制并自动生成报告 [${data.record ? data.record.id : ''}]！`);
     }
 
     async function triggerQuickDemo(mode) {
@@ -2711,7 +2766,7 @@
         sampleText = '我要开始制作咖啡。今天豆子用的是云南保山厌氧日晒铁皮卡，咖啡豆称重 19 克，做一杯意式浓缩，出液量 38 克。制作完成。';
       }
       document.getElementById('voiceInput').value = sampleText;
-      await sendVoiceUtterance();
+      await sendVoiceUtterance(true);
     }
 
     async function submitSupplement(recordId) {
@@ -2813,21 +2868,81 @@
       showToast(msg);
     }
 
+    let activeSpeechRec = null;
+    let keepListeningMic = false;
+
+    async function triggerVoiceWakeStart() {
+      const res = await fetch('/api/voice/wake', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          camera_id: 'pocket4p',
+          phrase: '我要开始制作咖啡。'
+        })
+      });
+      const data = await res.json();
+      await fetchState();
+      const model = (data.voice_session && data.voice_session.camera_model) || 'DJI Osmo Pocket 4 Pro';
+      showToast(`🔴 已唤醒 ${model} 开始录制！现在可口述参数，说「停止录制」自动暂停并生成报告`);
+    }
+
     function startBrowserSpeech() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const micBtn = document.getElementById('btnMicListen');
       if (!SpeechRecognition) {
-        showToast('当前浏览器环境不支持 Web Speech API，可直接输入或使用模拟按钮');
+        showToast('当前浏览器环境不支持 Web Speech API，请直接在输入框输入「开始制作咖啡」或「停止录制」');
         return;
       }
+
+      if (keepListeningMic && activeSpeechRec) {
+        keepListeningMic = false;
+        try { activeSpeechRec.stop(); } catch (e) {}
+        activeSpeechRec = null;
+        if (micBtn) micBtn.textContent = '🎤 开启语音监听';
+        showToast('⏸️ 已关闭麦克风持续语音监听');
+        return;
+      }
+
+      keepListeningMic = true;
       const recognition = new SpeechRecognition();
+      activeSpeechRec = recognition;
       recognition.lang = 'zh-CN';
+      recognition.continuous = true;
       recognition.interimResults = false;
-      recognition.onstart = () => showToast('🎙️ 正在聆听您的咖啡制作语音...');
-      recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        document.getElementById('voiceInput').value = transcript;
-        sendVoiceUtterance();
+
+      recognition.onstart = () => {
+        if (micBtn) micBtn.textContent = '🔴 正在监听语音 (点击关闭)';
+        showToast('🎙️ 麦克风持续监听已开启：说「我要开始制作咖啡」开录，说「停止录制 / 结束录制」自动停录并生成报告');
       };
+
+      recognition.onresult = async (event) => {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            const transcript = (event.results[i][0].transcript || '').trim();
+            if (transcript) {
+              document.getElementById('voiceInput').value = transcript;
+              await sendVoiceUtterance(false);
+            }
+          }
+        }
+      };
+
+      recognition.onerror = (event) => {
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          keepListeningMic = false;
+          if (micBtn) micBtn.textContent = '🎤 开启语音监听';
+          showToast('⚠️ 麦克风权限被拒绝，请在浏览器地址栏允许麦克风访问');
+        }
+      };
+
+      recognition.onend = () => {
+        if (keepListeningMic) {
+          try { recognition.start(); } catch (e) {}
+        } else if (micBtn) {
+          micBtn.textContent = '🎤 开启语音监听';
+        }
+      };
+
       recognition.start();
     }
 
