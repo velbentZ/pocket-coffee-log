@@ -1417,8 +1417,10 @@
       <div class="missing-banner" style="margin-bottom:20px; border-color:var(--crema);">
         <h3>🔌 USB-C / Root ADB 真机探测与 STA 实测硬件中枢</h3>
         <p id="usbProbeStatusText">正在检测当前 Mac USB 总线与串口设备...</p>
-        <div style="display:flex; gap:10px; flex-wrap:wrap;">
-          <button class="btn btn-primary" onclick="probeUsbDevices()">🔍 立即扫描 Mac USB-C / 串口设备</button>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <button class="btn btn-primary" type="button" id="btnRefreshCameraSta" onclick="refreshCameraStatus()">🔄 刷新相机实时状态</button>
+          <button class="btn" type="button" onclick="probeUsbDevices()">🔍 扫描 Mac USB-C / 串口设备</button>
+          <span id="cameraRefreshTimestamp" style="font-size:12px; color:var(--crema);"></span>
           <span style="font-size:12.5px; color:var(--crema-bright); align-self:center;">
             💡 实测架构：<code>OsmoPocket4P-ANHXP5J0022DTW</code> (<code>eagle4_hg224</code>) 通过 PCIe Wi-Fi <code>load</code> + <code>wpa_supplicant</code> + <code>busybox udhcpc</code> 接入局域网 <code>192.168.5.93</code>，开启 <code>:8088</code> 媒体服务与 <code>/api/camera/heartbeat</code> 实时心跳。
           </span>
@@ -2369,6 +2371,43 @@
       showToast(`🔍 USB 扫描完成：串口 [${(data.serial_ports || []).join(', ') || '无'}]`);
     }
 
+    async function refreshCameraStatus(deviceId = '') {
+      const btn = document.getElementById('btnRefreshCameraSta');
+      const tsEl = document.getElementById('cameraRefreshTimestamp');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ 正在刷新相机状态...';
+      }
+      try {
+        const [staRes, usbRes] = await Promise.all([
+          fetch('/api/camera/sta'),
+          fetch('/api/camera/usb_probe')
+        ]);
+        const staData = await staRes.json();
+        const usbData = await usbRes.json();
+        await fetchState();
+        if (usbData && usbData.ok) {
+          appState.usb_status = usbData;
+          renderBeansTab();
+        }
+        const nowStr = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+        if (tsEl) {
+          tsEl.textContent = `✓ 最近刷新: ${nowStr}`;
+        }
+        const targetCam = (staData.cameras && staData.cameras[deviceId || 'pocket4p']) || {};
+        const hb = targetCam.last_heartbeat ? targetCam.last_heartbeat.slice(11, 19) : '暂无';
+        const ip = (targetCam.verification && targetCam.verification.verified_sta_ip) || targetCam.lan_ip || '未分配';
+        showToast(`🔄 相机状态已刷新：IP ${ip} | 最近心跳 ${hb}`);
+      } catch (err) {
+        showToast(`❌ 刷新相机状态失败: ${err}`);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🔄 刷新相机实时状态';
+        }
+      }
+    }
+
     function renderCameraTab() {
       const camData = appState.camera_sta || {};
       const cameras = camData.cameras || {};
@@ -2402,7 +2441,10 @@
           <div class="camera-card">
             <div class="camera-card-head">
               <h3>📷 ${c.model} ${v.usb_product ? `<span style="font-size:12px; color:var(--crema); font-weight:500;">(${v.usb_product})</span>` : ''}</h3>
-              ${statusBadge}
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                ${statusBadge}
+                <button class="btn" type="button" style="padding:4px 10px; font-size:12px;" onclick="refreshCameraStatus('${c.device_id}')">🔄 刷新状态</button>
+              </div>
             </div>
 
             <div class="kv-list">
@@ -2420,6 +2462,7 @@
             </div>
 
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn" type="button" onclick="refreshCameraStatus('${c.device_id}')">🔄 刷新相机状态</button>
               ${previewBtnHtml}
               <button class="btn btn-primary" type="button" onclick="pullLatestMediaAndKeyframes('${c.device_id}')">⬇️ 无线拉取最新 MP4 并截取 4 阶段关键帧</button>
               <button class="btn" type="button" onclick="triggerCameraShutter('${c.device_id}', 'start')">▶️ 触发开录 (DUML 02:02)</button>
