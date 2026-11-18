@@ -1,5 +1,6 @@
 import base64
 import io
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
@@ -20,11 +21,11 @@ from daemon.voice_session import VoiceWakeupSessionManager
 from server import app
 
 
-def wav_payload(amplitude):
+def wav_payload(amplitude, seconds=2, offset=0):
     output = io.BytesIO()
     with wave.open(output, "wb") as wav:
         wav.setparams((1, 2, 16000, 0, "NONE", ""))
-        wav.writeframes(struct.pack("<hh", amplitude, -amplitude) * 16000)
+        wav.writeframes(struct.pack("<hh", offset + amplitude, offset - amplitude) * (8000 * seconds))
     return dict(device_id="pocket4p", recording_active=False,
                 wav_b64=base64.b64encode(output.getvalue()).decode())
 
@@ -73,6 +74,35 @@ class CameraVoiceTests(unittest.TestCase):
         self.assertEqual(self.post(wav_payload(3)), dict(
             ok=True, transcript="", command="none", action_token="ACTION:NONE"))
         app.vision_engine.extract_audio_and_transcribe.assert_not_called()
+
+    def test_quiet_four_second_wav_is_centered_and_amplified(self):
+        def recognize(path):
+            with wave.open(path, "rb") as wav:
+                self.assertEqual(wav.getnframes(), 64000)
+                self.assertEqual(struct.unpack("<hh", wav.readframes(2)), (2400, -2400))
+            return "开始录制"
+
+        app.vision_engine.extract_audio_and_transcribe.side_effect = recognize
+        self.assertEqual(self.post(wav_payload(200, seconds=4, offset=40))["command"], "start")
+
+    def test_wav_length_limits(self):
+        self.assertEqual(self.post(wav_payload(0, seconds=10))["command"], "none")
+        with self.assertRaisesRegex(ValueError, "Invalid camera WAV length"):
+            app._camera_voice_chunk(wav_payload(0, seconds=11))
+
+    def test_split_wake_and_stop(self):
+        self.assertEqual(self.say("我要开始")["command"], "none")
+        self.assertEqual(self.say("鹿制")["command"], "start")
+        self.assertEqual(self.say("请停止", True)["command"], "none")
+        self.assertEqual(self.say("路制", True)["command"], "stop")
+
+    def test_old_or_other_camera_chunk_does_not_complete_command(self):
+        handle = self.manager.handle_camera_transcript
+        self.assertEqual(handle("pocket3", "开始", False), "none")
+        self.assertEqual(handle("pocket4p", "录制", False), "none")
+        self.assertEqual(handle("pocket4p", "开始", False), "none")
+        self.manager._last_camera_chunk["at"] -= timedelta(seconds=7)
+        self.assertEqual(handle("pocket4p", "录制", False), "none")
 
     def test_wake_parameter_stop_and_webhook_retry(self):
         self.assertEqual(self.say("我要开始，制作咖啡")["action_token"], "ACTION:START")

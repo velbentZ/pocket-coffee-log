@@ -307,6 +307,11 @@ guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")),
 let req = SFSpeechURLRecognitionRequest(url: targetURL)
 req.requiresOnDeviceRecognition = true
 req.shouldReportPartialResults = false
+req.contextualStrings = [
+    "开始录制", "开始录像", "我要开始制作咖啡", "开始制作咖啡", "开始做咖啡",
+    "停止录制", "结束录制", "停止录像", "结束录像", "制作完成", "咖啡做好了",
+    "粉量", "液重", "研磨度", "刻度", "水温", "萃取"
+]
 
 var transcription: SFTranscription?
 let completed = DispatchSemaphore(value: 0)

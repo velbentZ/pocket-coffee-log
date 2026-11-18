@@ -187,7 +187,7 @@ agent_running() {
 if [ ! -f "$agent" ]; then echo not_installed; exit 0; fi
 if agent_running; then echo already_running; exit 0; fi
 if [ "${check_only:-0}" = 1 ]; then echo not_running; exit 0; fi
-busybox nohup /system/bin/sh "$agent" </dev/null >"$base/console.log" 2>&1 &
+/sbin/busybox setsid sh "$agent" </dev/null >/dev/null 2>&1 &
 for attempt in 1 2 3; do
     sleep 1
     if agent_running; then echo started; exit 0; fi
@@ -198,6 +198,7 @@ exit 1
 
 ON_CAMERA_AGENT_SCRIPT = r"""#!/system/bin/sh
 # Verified on eagle4_hg224. Install in /data/pocket-coffee; firmware is read-only.
+trap '' HUP
 BASE_DIR="${BASE_DIR:-/data/pocket-coffee}"
 [ -r "$BASE_DIR/agent.env" ] && . "$BASE_DIR/agent.env"
 DEVICE_ID="${DEVICE_ID:-pocket4p}"
@@ -218,9 +219,27 @@ case "$OLD_PID" in
            "$BB" tr '\000' '\n' < "/proc/$OLD_PID/cmdline" | "$BB" grep -Fxq "$0"; then exit 0; fi ;;
 esac
 echo $$ > "$PID_FILE"
-VOICE_WAV=/tmp/pocket_coffee_voice_$$.wav
-trap 'exit 0' INT TERM
-trap 'rm -f "$PID_FILE" "$VOICE_WAV"' EXIT
+VOICE_WAV_A=/tmp/pocket_coffee_voice_a_$$.wav
+VOICE_WAV_B=/tmp/pocket_coffee_voice_b_$$.wav
+CAPTURE_PID=
+stop_agent() {
+    if [ "${RUN_ONCE:-0}" != 1 ]; then
+        echo pocket_coffee_sta 2>/dev/null > /sys/power/wake_unlock || true
+    fi
+    exit 0
+}
+cleanup_agent() {
+    if [ -n "$CAPTURE_PID" ]; then
+        kill "$CAPTURE_PID" 2>/dev/null
+        wait "$CAPTURE_PID" 2>/dev/null
+    fi
+    rm -f "$PID_FILE" "$VOICE_WAV_A" "$VOICE_WAV_B"
+}
+trap stop_agent INT TERM
+trap cleanup_agent EXIT
+if [ "${RUN_ONCE:-0}" != 1 ]; then
+    echo pocket_coffee_sta 2>/dev/null > /sys/power/wake_lock || true
+fi
 log() { echo "$(date) $*" >> "${AGENT_LOG:-/tmp/pocket_sta_agent.log}"; }
 
 ensure_sta() {
@@ -306,7 +325,7 @@ heartbeat() {
     LATEST_MEDIA_FILE="${LATEST_MP4##*/}"
     LATEST_MEDIA_URL=""
     [ -n "$LATEST_MEDIA_FILE" ] && LATEST_MEDIA_URL="http://$CURRENT_IP:8088/DJI_001/$LATEST_MEDIA_FILE"
-    BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v6-hg224-camera-mic\",\"battery_percent\":$BATTERY_PERCENT,\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
+    BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v7-hg224-camera-mic\",\"battery_percent\":$BATTERY_PERCENT,\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
     if post_json /api/camera/heartbeat "$BODY"; then
         sync_clock
         log "heartbeat accepted ip=$CURRENT_IP battery_percent=$BATTERY_PERCENT sd_free_gb=$SD_FREE_GB latest_media_file=$LATEST_MEDIA_FILE"
@@ -315,8 +334,23 @@ heartbeat() {
     fi
 }
 
+upload_mp4_webhook() {
+    BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"camera\":\"DJI Osmo Pocket 4 Pro\",\"ip\":\"$CURRENT_IP\",\"file_path\":\"$(json_escape "$NEW_MP4")\",\"media_url\":\"http://$CURRENT_IP:8088/DJI_001/$(json_escape "$NEW_MP4_BASENAME")\"}"
+    if post_json /api/camera/webhook "$BODY" 90; then
+        printf '%s\n' "$NEW_MP4_BASENAME" > "$BASE_DIR/last_mp4.txt"
+        log "media webhook accepted file=$NEW_MP4_BASENAME size=$NEW_SIZE"
+    else
+        log "media webhook failed file=$NEW_MP4_BASENAME: $RESPONSE"
+    fi
+}
+
 watch_mp4() {
     [ "$REC" != true ] || return
+    if [ -n "$WEBHOOK_PID" ]; then
+        kill -0 "$WEBHOOK_PID" 2>/dev/null && return
+        wait "$WEBHOOK_PID"
+        WEBHOOK_PID=
+    fi
     NEW_MP4=$(newest_mp4)
     [ -n "$NEW_MP4" ] || return
     NEW_MP4_BASENAME="${NEW_MP4##*/}"
@@ -325,33 +359,28 @@ watch_mp4() {
     NEW_SIZE=$("$BB" stat -c %s "$NEW_MP4" 2>/dev/null)
     [ -n "$NEW_SIZE" ] && [ "$NEW_SIZE" -gt 0 ] || return
     if [ "$PENDING_MP4" = "$NEW_MP4" ] && [ "$PENDING_SIZE" = "$NEW_SIZE" ]; then
-        BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"camera\":\"DJI Osmo Pocket 4 Pro\",\"ip\":\"$CURRENT_IP\",\"file_path\":\"$(json_escape "$NEW_MP4")\",\"media_url\":\"http://$CURRENT_IP:8088/DJI_001/$(json_escape "$NEW_MP4_BASENAME")\"}"
-        if post_json /api/camera/webhook "$BODY" 90; then
-            printf '%s\n' "$NEW_MP4_BASENAME" > "$BASE_DIR/last_mp4.txt"
-            log "media webhook accepted file=$NEW_MP4_BASENAME size=$NEW_SIZE"
+        # Report generation can take longer than a capture window.
+        if [ "${RUN_ONCE:-0}" = 1 ]; then
+            upload_mp4_webhook
         else
-            log "media webhook failed file=$NEW_MP4_BASENAME: $RESPONSE"
+            upload_mp4_webhook &
+            WEBHOOK_PID=$!
         fi
     fi
     PENDING_MP4="$NEW_MP4"
     PENDING_SIZE="$NEW_SIZE"
 }
 
-stop_watch() {
-    REC=false
-    watch_mp4
-    sleep 2
-    watch_mp4
+capture_voice_chunk() {
+    rm -f "$1"
+    exec "$BB" timeout -t 7 parec -d alsa_input.0.custom-input-multich \
+        --rate=16000 --format=s16le --channels=1 --file-format=wav \
+        --capture-time=3 "$1" 2>/dev/null
 }
 
 poll_voice_chunk() {
-    rm -f "$VOICE_WAV"
-    if ! "$BB" timeout -t 6 parec -d alsa_input.0.custom-input-multich \
-            --rate=16000 --format=s16le --channels=1 --file-format=wav \
-            --capture-time=2 "$VOICE_WAV" 2>/dev/null || [ ! -s "$VOICE_WAV" ]; then
-        log "mic voice polling: capture failed"
-        return
-    fi
+    VOICE_WAV="$1"
+    [ -s "$VOICE_WAV" ] || return
     # Stock HG224 BusyBox lacks -w; strip line wrapping on that build.
     B64=$("$BB" base64 -w 0 "$VOICE_WAV" 2>/dev/null) ||
         B64=$("$BB" base64 "$VOICE_WAV" | "$BB" tr -d '\r\n')
@@ -371,7 +400,7 @@ poll_voice_chunk() {
         *'"ACTION:STOP"'*|*'"command":"stop"'*|*'"command": "stop"'*)
             if dji_mb_ctrl -S test -R diag -g 1 -t 0 -s 2 -c 0x02 00 >> "$BASE_DIR/agent.log" 2>&1; then
                 log "mic voice polling: ACTION:STOP dispatched"
-                stop_watch
+                REC=false
             fi;;
         *) log "mic voice polling: ACTION:NONE";;
     esac
@@ -382,7 +411,7 @@ read_shutter_marker() {
     SHUTTER_ACTION=$(cat "$BASE_DIR/shutter.$$")
     rm -f "$BASE_DIR/shutter.$$"
     # The Mac wrote this marker after dispatching the physical ADB command.
-    case "$SHUTTER_ACTION" in start) REC=true;; stop) stop_watch;; esac
+    case "$SHUTTER_ACTION" in start) REC=true;; stop) REC=false;; esac
 }
 
 log 'Starting STA agent; boot auto-start is not installed by this script'
@@ -390,22 +419,47 @@ log 'Starting STA agent; boot auto-start is not installed by this script'
 INITIAL_MP4=$(newest_mp4)
 [ -e "$BASE_DIR/last_mp4.txt" ] || printf '%s\n' "${INITIAL_MP4##*/}" > "$BASE_DIR/last_mp4.txt"
 REC=false
+WEBHOOK_PID=
 PENDING_MP4=""
 PENDING_SIZE=""
 # The media server is optional; it only exposes the verified DCIM directory.
 if [ -d "$DCIM_DIR" ]; then
     "$BB" httpd -p 8088 -h "$DCIM_DIR" 2>> "$BASE_DIR/agent.log"
 fi
-while true; do
+if [ "${RUN_ONCE:-0}" = 1 ]; then
     if ensure_sta; then
         heartbeat
         read_shutter_marker
         watch_mp4
-        [ "${RUN_ONCE:-0}" = 1 ] && break
-        poll_voice_chunk
+        (capture_voice_chunk "$VOICE_WAV_A") && poll_voice_chunk "$VOICE_WAV_A"
+    fi
+    exit 0
+fi
+
+CUR_WAV="$VOICE_WAV_B"
+NEXT_WAV="$VOICE_WAV_A"
+capture_voice_chunk "$NEXT_WAV" &
+CAPTURE_PID=$!
+while true; do
+    if wait "$CAPTURE_PID" && [ -s "$NEXT_WAV" ]; then
+        CAPTURE_OK=1
     else
-        [ "${RUN_ONCE:-0}" = 1 ] && break
-        sleep 5
+        CAPTURE_OK=0
+    fi
+    SWAP_WAV="$CUR_WAV"
+    CUR_WAV="$NEXT_WAV"
+    NEXT_WAV="$SWAP_WAV"
+    # Start capturing before any network or media work touches the finished WAV.
+    capture_voice_chunk "$NEXT_WAV" &
+    CAPTURE_PID=$!
+    [ "$CAPTURE_OK" = 1 ] || log "mic voice polling: capture failed"
+    if ensure_sta; then
+        read_shutter_marker
+        [ "$CAPTURE_OK" = 1 ] && poll_voice_chunk "$CUR_WAV"
+        heartbeat
+        watch_mp4
+    else
+        sleep 3
     fi
 done
 """

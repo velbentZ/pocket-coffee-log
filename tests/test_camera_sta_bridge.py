@@ -188,7 +188,7 @@ class CameraSTABridgeTests(unittest.TestCase):
                     args = run.call_args.args[0]
                     self.assertEqual(args[:-1], argv + ['shell'])
                     self.assertIn('/data/pocket-coffee/pocket_sta_agent.sh', args[-1])
-                    self.assertIn('busybox nohup /system/bin/sh', args[-1])
+                    self.assertIn('/sbin/busybox setsid sh', args[-1])
             provision.assert_not_called()
             self.assertEqual(adb.call_count, 3)
             adb.assert_called_with('pocket4p')
@@ -209,9 +209,9 @@ class CameraSTABridgeTests(unittest.TestCase):
         agent.unlink()  # Bridge construction exports a copy into this directory.
         command = camera_sta_bridge._ADB_ENSURE_STA_AGENT.replace(
             '/data/pocket-coffee', str(root)).replace('/proc/', f'{root}/proc/')
-        # Emulate the firmware's BusyBox, shell and procfs using local fixtures.
-        command = 'busybox() { "$@"; }\n' + command.replace(
-            'busybox nohup /system/bin/sh', 'busybox nohup sh')
+        # Emulate BusyBox and its setsid applet (macOS does not ship setsid).
+        command = 'busybox() { [ "$1" != setsid ] || shift; "$@"; }\n' + command.replace(
+            '/sbin/busybox', 'busybox')
 
         def run_recovery():
             return subprocess.run(['sh', '-c', command], capture_output=True, text=True, check=True)
@@ -342,7 +342,7 @@ DEVICE_ID=pocket4p
 WIFI_SSID=coffee
 """ + commands
         result = subprocess.run(['sh'], input=shell + '\n:', text=True, capture_output=True,
-                                env={**os.environ, 'BASE_DIR': self.temp.name}, check=True)
+                                env={**os.environ, 'BASE_DIR': self.temp.name}, check=True, timeout=5)
         return [json.loads(line) for line in result.stdout.splitlines()]
 
     def test_agent_reads_wrapped_df_telemetry(self):
@@ -376,6 +376,22 @@ watch_mp4
         self.assertEqual(payloads[0]['file_path'], '/media/new.MP4')
         self.assertEqual(payloads[0]['media_url'], 'http://192.168.5.93:8088/DJI_001/new.MP4')
         self.assertEqual(Path(self.temp.name, 'last_mp4.txt').read_text().strip(), 'new.MP4')
+
+
+    def test_agent_does_not_block_capture_loop_on_media_webhook(self):
+        payloads = self.run_agent_functions(r"""
+mkfifo "$BASE_DIR/release"
+post_json() {
+    read -r READY < "$BASE_DIR/release"
+    printf '%s\n' "$2"
+}
+FAKE_NEW=/media/new.MP4; FAKE_SIZE=100; watch_mp4
+watch_mp4
+watch_mp4
+echo ready > "$BASE_DIR/release"
+wait
+""")
+        self.assertEqual([p['file_path'] for p in payloads], ['/media/new.MP4'])
 
 
 class ProvisionCameraCLITests(unittest.TestCase):

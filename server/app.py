@@ -260,7 +260,8 @@ def build_shot_comparison(
     }
 
 
-VOICE_CHUNK_MAX_BODY = 256 * 1024
+VOICE_CHUNK_MAX_BODY = 512 * 1024
+VOICE_CHUNK_MAX_FRAMES = 160000
 
 
 def _camera_voice_chunk(body):
@@ -276,8 +277,8 @@ def _camera_voice_chunk(body):
         with wave.open(io.BytesIO(raw), "rb") as wav:
             if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (1, 2, 16000):
                 raise ValueError("Expected mono 16 kHz signed 16-bit PCM WAV")
-            frames = wav.readframes(48001)
-        if len(frames) % 2 or len(frames) > 96000:
+            frames = wav.readframes(VOICE_CHUNK_MAX_FRAMES + 1)
+        if len(frames) % 2 or len(frames) > VOICE_CHUNK_MAX_FRAMES * 2:
             raise ValueError("Invalid camera WAV length")
     except (binascii.Error, EOFError, wave.Error, UnicodeError) as exc:
         raise ValueError("Invalid camera WAV") from exc
@@ -286,19 +287,34 @@ def _camera_voice_chunk(body):
     if sys.byteorder != "little":
         samples.byteswap()
     transcript, command = "", "none"
-    if samples and max(max(samples), -min(samples)) >= 500:
-        # Check short windows so a brief word is not averaged into two seconds of quiet.
+    peak = max(max(samples), -min(samples)) if samples else 0
+    if peak >= 160:
+        # Check short windows so a brief word is not averaged into the entire clip.
         speech_energy = any(
-            sum(sample * sample for sample in window) >= len(window) * 150**2
+            sum(sample * sample for sample in window) >= len(window) * 50**2
             for window in (samples[i:i + 800] for i in range(0, len(samples), 800))
         )
         if speech_energy:
             with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
-                audio.write(raw)
+                if peak < 3000:
+                    dc_offset = sum(samples) / len(samples)
+                    centered_peak = max(max(samples) - dc_offset, dc_offset - min(samples))
+                    if not centered_peak:
+                        return {"ok": True, "transcript": "", "command": "none", "action_token": "ACTION:NONE"}
+                    gain = min(12.0, 8000 / centered_peak)
+                    normalized = array("h", (round((sample - dc_offset) * gain) for sample in samples))
+                    if sys.byteorder != "little":
+                        normalized.byteswap()
+                    with wave.open(audio, "wb") as wav:
+                        wav.setparams((1, 2, 16000, 0, "NONE", ""))
+                        wav.writeframes(normalized.tobytes())
+                else:
+                    audio.write(raw)
                 audio.flush()
                 transcript = vision_engine.extract_audio_and_transcribe(audio.name).strip()
             if transcript:
                 command = voice_manager.handle_camera_transcript(device_id, transcript, recording)
+                print(f"[CameraMic] {device_id}: transcript={transcript!r} -> command={command}", flush=True)
     return {"ok": True, "transcript": transcript, "command": command, "action_token": f"ACTION:{command.upper()}"}
 
 

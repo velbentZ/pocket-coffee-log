@@ -54,7 +54,7 @@ PORT=8788 python3 server/app.py
 
 # 3. 通过 USB Root ADB 在 Osmo Pocket 4 Pro (eagle4_hg224) 内启动 STA 守护进程
 adb -s 123456789ABCDEF push data/pocket_sta_agent.sh /data/pocket-coffee/pocket_sta_agent.sh
-adb -s 123456789ABCDEF shell 'chmod 755 /data/pocket-coffee/pocket_sta_agent.sh && /sbin/busybox nohup /system/bin/sh /data/pocket-coffee/pocket_sta_agent.sh </dev/null >/data/pocket-coffee/console.log 2>&1 &'
+adb -s 123456789ABCDEF shell 'chmod 755 /data/pocket-coffee/pocket_sta_agent.sh && { /sbin/busybox setsid sh /data/pocket-coffee/pocket_sta_agent.sh </dev/null >/dev/null 2>&1 & }'
 ```
 
 启动后在浏览器或手机端打开：`http://127.0.0.1:8788`（局域网手机访问：`http://192.168.5.84:8788`，相机 `:8088` 媒体服务：`http://192.168.5.93:8088/DJI_001/`）。

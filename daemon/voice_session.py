@@ -28,6 +28,8 @@ from core.store import CoffeeStore
 WAKE_KEYWORDS = [
     "我要开始制作咖啡",
     "开始制作咖啡",
+    "开始制作",
+    "制作咖啡",
     "开始做咖啡",
     "开始萃咖啡",
     "开始冲咖啡",
@@ -35,6 +37,8 @@ WAKE_KEYWORDS = [
     "开始录像",
     "开始拍摄",
     "打开录制",
+    "开启录制",
+    "开始录",
 ]
 STOP_KEYWORDS = [
     "咖啡制作完成",
@@ -46,6 +50,10 @@ STOP_KEYWORDS = [
     "暂停录制",
     "停止录像",
     "结束录像",
+    "停止录",
+    "结束录",
+    "不录了",
+    "录完了",
     "停止",
     "结束",
     "咖啡做好了",
@@ -65,6 +73,7 @@ def _normalize_command(text: str) -> str:
     for variant, canonical in (
         ("录像", "录制"), ("录象", "录制"), ("录製", "录制"),
         ("錄製", "录制"), ("錄影", "录制"), ("錄像", "录制"),
+        ("鹿制", "录制"), ("路制", "录制"), ("陆制", "录制"),
         ("录质", "录制"), ("录音制", "录制"), ("制作咖非", "制作咖啡"),
         ("開始", "开始"), ("結束", "结束"), ("製作", "制作"),
     ):
@@ -110,6 +119,7 @@ class VoiceWakeupSessionManager:
         notifier: NotificationManager,
     ):
         self._session_lock = RLock()
+        self._last_camera_chunk: Optional[Dict[str, Any]] = None
         self.store = store
         self.camera_bridge = camera_bridge
         self.notifier = notifier
@@ -177,19 +187,34 @@ class VoiceWakeupSessionManager:
         session = self.active_session
         if session["state"] in ("recording", "awaiting_media") and session["camera_id"] != camera_id:
             return "none"
+        if not transcript.strip():
+            return "none"
+        now = datetime.now()
+        previous = self._last_camera_chunk
+        combined = transcript
+        if (previous and previous["camera_id"] == camera_id
+                and 0 <= (now - previous["at"]).total_seconds() <= 6.0):
+            combined = previous["text"] + transcript
+        self._last_camera_chunk = {"camera_id": camera_id, "text": transcript, "at": now}
         recording = session["state"] == "recording" or recording_active
-        if recording and self.matches_stop_word(transcript):
+        if recording and (self.matches_stop_word(transcript) or self.matches_stop_word(combined)):
+            self._last_camera_chunk = None
             if session.get("started_at"):
                 session.setdefault("utterance_events", []).append(
                     self._make_utterance_event(transcript, "camera_mic", datetime.now())
                 )
-                if _has_meaningful_brewing_speech(transcript):
+                if _has_meaningful_brewing_speech(
+                    transcript if self.matches_stop_word(transcript) else combined
+                ):
                     session["transcript_chunks"].append(transcript)
             session.update(state="awaiting_media", camera_id=camera_id, last_event="等待相机完成视频文件")
             return "stop"
-        if session["state"] == "standby_listening" and not recording and self.matches_wake_word(transcript):
-            self.start_session(camera_id, initial_utterance=transcript, trigger_source="camera_mic")
-            return "start"
+        if session["state"] == "standby_listening" and not recording:
+            wake_text = transcript if self.matches_wake_word(transcript) else combined
+            if self.matches_wake_word(wake_text):
+                self._last_camera_chunk = None
+                self.start_session(camera_id, initial_utterance=wake_text, trigger_source="camera_mic")
+                return "start"
         if recording and session["state"] != "awaiting_media" and transcript:
             if session["state"] != "recording":
                 self.start_session(camera_id, initial_utterance="", trigger_source="camera_mic")
