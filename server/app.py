@@ -20,7 +20,14 @@ Provides REST endpoints for:
 - `/api/notifications/config`: Update WeCom / ServerChan / Bark / Feishu push credentials
 """
 
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from array import array
+import base64
+import binascii
+import io
+import tempfile
+import time
+import wave
 import json
 import os
 import re
@@ -253,6 +260,48 @@ def build_shot_comparison(
     }
 
 
+VOICE_CHUNK_MAX_BODY = 256 * 1024
+
+
+def _camera_voice_chunk(body):
+    if not isinstance(body, dict):
+        raise ValueError("Expected a JSON object")
+    device_id = body.get("device_id")
+    recording = body.get("recording_active")
+    encoded = body.get("wav_b64")
+    if device_id not in ("pocket4p", "pocket3") or type(recording) is not bool or not isinstance(encoded, str):
+        raise ValueError("Expected device_id, boolean recording_active and wav_b64")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+        with wave.open(io.BytesIO(raw), "rb") as wav:
+            if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (1, 2, 16000):
+                raise ValueError("Expected mono 16 kHz signed 16-bit PCM WAV")
+            frames = wav.readframes(48001)
+        if len(frames) % 2 or len(frames) > 96000:
+            raise ValueError("Invalid camera WAV length")
+    except (binascii.Error, EOFError, wave.Error, UnicodeError) as exc:
+        raise ValueError("Invalid camera WAV") from exc
+
+    samples = array("h", frames)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    transcript, command = "", "none"
+    if samples and max(max(samples), -min(samples)) >= 500:
+        # Check short windows so a brief word is not averaged into two seconds of quiet.
+        speech_energy = any(
+            sum(sample * sample for sample in window) >= len(window) * 150**2
+            for window in (samples[i:i + 800] for i in range(0, len(samples), 800))
+        )
+        if speech_energy:
+            with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
+                audio.write(raw)
+                audio.flush()
+                transcript = vision_engine.extract_audio_and_transcribe(audio.name).strip()
+            if transcript:
+                command = voice_manager.handle_camera_transcript(device_id, transcript, recording)
+    return {"ok": True, "transcript": transcript, "command": command, "action_token": f"ACTION:{command.upper()}"}
+
+
 class CoffeeRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC_DIR, **kwargs)
@@ -434,6 +483,17 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/api/camera/voice_chunk":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= VOICE_CHUNK_MAX_BODY:
+                    raise ValueError("Invalid voice chunk body length")
+                result = _camera_voice_chunk(self._read_json_body())
+            except (ValueError, UnicodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(result)
+            return
         body = self._read_json_body()
 
         if path == "/api/camera/auto_recover":
@@ -444,6 +504,8 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/camera/heartbeat":
             result = camera_bridge.record_heartbeat(body, self.client_address[0])
+            if result.get("sta_verified"):
+                result["server_epoch"] = int(time.time())
             self._send_json(result, status=200 if result["ok"] else 400)
             return
 
@@ -637,6 +699,7 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 media_url=media_url,
                 video_path=file_path,
                 hint_overrides=hint_overrides,
+                media_finalized=True,
             )
             self._send_json({"ok": True, "webhook_processed": True, **res})
             return
@@ -691,7 +754,7 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8788) -> None:
-    server = HTTPServer((host, port), CoffeeRequestHandler)
+    server = ThreadingHTTPServer((host, port), CoffeeRequestHandler)
     print(f"☕️ Pocket Coffee Log Server listening on http://{host}:{port}")
     camera_bridge.start_auto_recovery()
     try:

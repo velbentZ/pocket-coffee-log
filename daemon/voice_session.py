@@ -8,6 +8,10 @@ revision history.
 
 from datetime import datetime
 import os
+import re
+from threading import RLock
+from functools import wraps
+from urllib.parse import urlsplit
 from typing import Any, Dict, List, Optional
 
 from core.analyzer import enrich_barista_analysis, extract_parameters_from_transcript
@@ -44,6 +48,7 @@ STOP_KEYWORDS = [
     "结束录像",
     "停止",
     "结束",
+    "咖啡做好了",
     "做好了",
 ]
 
@@ -55,6 +60,26 @@ GIMBAL_STAGE_KEYWORDS = [
 ]
 
 
+def _normalize_command(text: str) -> str:
+    text = re.sub(r"[\W_]+", "", text)
+    for variant, canonical in (
+        ("录像", "录制"), ("录象", "录制"), ("录製", "录制"),
+        ("錄製", "录制"), ("錄影", "录制"), ("錄像", "录制"),
+        ("录质", "录制"), ("录音制", "录制"), ("制作咖非", "制作咖啡"),
+        ("開始", "开始"), ("結束", "结束"), ("製作", "制作"),
+    ):
+        text = text.replace(variant, canonical)
+    return text
+
+
+def _serialized(method):
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._session_lock:
+            return method(self, *args, **kwargs)
+    return locked
+
+
 class VoiceWakeupSessionManager:
     def __init__(
         self,
@@ -62,6 +87,7 @@ class VoiceWakeupSessionManager:
         camera_bridge: CameraInternalBridge,
         notifier: NotificationManager,
     ):
+        self._session_lock = RLock()
         self.store = store
         self.camera_bridge = camera_bridge
         self.notifier = notifier
@@ -111,19 +137,56 @@ class VoiceWakeupSessionManager:
     def get_status(self) -> Dict[str, Any]:
         return dict(self.active_session)
 
-    def start_session(self, camera_id: str = "pocket4p", initial_phrase: str = "我要开始制作咖啡。") -> Dict[str, Any]:
+    @staticmethod
+    def matches_wake_word(text: str) -> bool:
+        normalized = _normalize_command(text)
+        return any(_normalize_command(word) in normalized for word in WAKE_KEYWORDS)
+
+    @staticmethod
+    def matches_stop_word(text: str) -> bool:
+        normalized = _normalize_command(text)
+        return normalized in ("停止", "结束") or any(
+            _normalize_command(word) in normalized
+            for word in STOP_KEYWORDS if word not in ("停止", "结束")
+        )
+
+    @_serialized
+    def handle_camera_transcript(self, camera_id: str, transcript: str, recording_active: bool) -> str:
+        session = self.active_session
+        if session["state"] in ("recording", "awaiting_media") and session["camera_id"] != camera_id:
+            return "none"
+        recording = session["state"] == "recording" or recording_active
+        if recording and self.matches_stop_word(transcript):
+            session.update(state="awaiting_media", camera_id=camera_id, last_event="等待相机完成视频文件")
+            return "stop"
+        if session["state"] == "standby_listening" and not recording and self.matches_wake_word(transcript):
+            self.start_session(camera_id, initial_utterance=transcript, trigger_source="camera_mic")
+            return "start"
+        if recording and session["state"] != "awaiting_media" and transcript:
+            if session["state"] != "recording":
+                self.start_session(camera_id, initial_utterance="", trigger_source="camera_mic")
+            self.append_utterance(transcript, source="camera_mic")
+        return "none"
+
+    @_serialized
+    def start_session(self, camera_id: str = "pocket4p", initial_phrase: str = "我要开始制作咖啡。",
+                      *, initial_utterance: Optional[str] = None,
+                      trigger_source: str = "voice_utterance") -> Dict[str, Any]:
+        if initial_utterance is not None:
+            initial_phrase = initial_utterance
         cam_state = self.camera_bridge.load_state()["cameras"].get(camera_id, {})
         model = cam_state.get("model", "DJI Osmo Pocket 4 Pro")
 
         # Trigger LAN STA shutter start
-        shutter_res = self.camera_bridge.trigger_lan_recording(camera_id, action="start")
+        shutter_res = ({} if trigger_source == "camera_mic" else
+                       self.camera_bridge.trigger_lan_recording(camera_id, action="start"))
         gimbal_res = self._follow_gimbal_stage(camera_id, initial_phrase)
         now_str = datetime.now().strftime("%H:%M:%S")
         sess_id = f"sess-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
         utterances = []
         if initial_phrase:
-            utterances.append({"text": initial_phrase, "source": "voice_utterance", "timestamp": now_str})
+            utterances.append({"text": initial_phrase, "source": trigger_source, "timestamp": now_str})
 
         compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
 
@@ -145,6 +208,7 @@ class VoiceWakeupSessionManager:
         global_event_bus.publish("session.started", {"session_id": sess_id, "camera_id": camera_id})
         return self.active_session
 
+    @_serialized
     def append_utterance(self, text: str, source: str = "voice_utterance") -> Dict[str, Any]:
         text = text.strip()
         if not text:
@@ -175,7 +239,7 @@ class VoiceWakeupSessionManager:
             self.active_session["compacted_context"] = compacted.to_dict()
             self.active_session["last_event"] = f"已捕获过程语音并无损压缩：「{compacted.compacted_summary[:68]}...」"
 
-        if any(s in text for s in STOP_KEYWORDS):
+        if self.matches_stop_word(text):
             stop_out = self.stop_and_process(reason="识别到结束语音指令，自动停录并生成报告")
             if gimbal_res is not None:
                 stop_out["gimbal_action"] = gimbal_res
@@ -183,6 +247,7 @@ class VoiceWakeupSessionManager:
 
         return {"session": self.active_session, "auto_stopped": False, "gimbal_action": gimbal_res}
 
+    @_serialized
     def stop_and_process(
         self,
         reason: str = "检测到萃取完成 & 静默超时，自动停止录制",
@@ -191,18 +256,33 @@ class VoiceWakeupSessionManager:
         media_url: Optional[str] = None,
         video_path: Optional[str] = None,
         hint_overrides: Optional[Dict[str, Any]] = None,
+        *, media_finalized: bool = False,
     ) -> Dict[str, Any]:
         cam_id = camera_id or self.active_session.get("camera_id", "pocket4p")
         cam_state = self.camera_bridge.load_state()["cameras"].get(cam_id, {})
         model = cam_state.get("model", "DJI Osmo Pocket 4 Pro")
         sess_id = self.active_session.get("session_id") or f"sess-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-        # 1. Stop camera over LAN STA
-        shutter_stop = self.camera_bridge.trigger_lan_recording(cam_id, action="stop")
-
-        # 2. Resolve camera media URL and verified /mnt/media_rw/emulated/DCIM/DJI_001/... path
         explicit_video_path = (video_path or "").strip() or None
         explicit_media_url = (media_url or "").strip() or None
+        clip = os.path.basename(urlsplit(explicit_video_path or explicit_media_url or "").path)
+        if clip.lower().endswith(".mp4"):
+            for record in self.store.list_records():
+                if record.camera_device == model and any(
+                    os.path.basename(urlsplit(path or "").path) == clip
+                    for path in (record.video_path, record.media_url)
+                ):
+                    return {"duplicate": True, "record": record.to_dict(), "session": self.get_status()}
+
+        shutter_stop = {} if media_finalized else self.camera_bridge.trigger_lan_recording(cam_id, action="stop")
+        if not (media_finalized or explicit_video_path or explicit_media_url):
+            if shutter_stop.get("adb_shutter_dispatched") is True or self.active_session["state"] == "awaiting_media":
+                self.active_session.update(state="awaiting_media", last_event="等待相机完成视频文件")
+                if override_transcript:
+                    self.active_session.update(transcript_chunks=[override_transcript], utterance_events=[])
+                return {"auto_stopped": True, "awaiting_media": True, "session": self.get_status()}
+
+        # Resolve the finalized MP4, or the legacy media source for an explicit report.
         resolved_media_url = (
             explicit_media_url
             or (
@@ -248,7 +328,7 @@ class VoiceWakeupSessionManager:
             cached_candidate = os.path.join(self.store.data_dir, "media_cache", os.path.basename(resolved_media_url))
             if os.path.isfile(cached_candidate):
                 local_analysis_video_file = cached_candidate
-            elif not full_transcript and hasattr(self.camera_bridge, "pull_latest_media"):
+            elif ((media_finalized and override_transcript is None) or not full_transcript) and hasattr(self.camera_bridge, "pull_latest_media"):
                 try:
                     pull_res = self.camera_bridge.pull_latest_media(
                         device_id=cam_id,
@@ -272,7 +352,7 @@ class VoiceWakeupSessionManager:
                     }
                 ]
 
-        if not full_transcript:
+        if not full_transcript and not media_finalized:
             full_transcript = "我要开始制作咖啡。今天用的是埃塞俄比亚耶加雪菲水洗浅烘，豆子称重18克，独立磨豆机 Niche Zero 刻度 15，做意式浓缩，9 bar 萃取 28 秒，出液 36 克。"
             utterances = [{"text": full_transcript, "source": "voice_utterance", "timestamp": datetime.now().strftime("%H:%M:%S")}]
 

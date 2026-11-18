@@ -301,15 +301,27 @@ echo launched >> "$base/launches"
 
         transport = {'ok': True, 'serial': '123456789ABCDEF', 'transport': 'usb',
                      'argv': ['adb', '-s', '123456789ABCDEF']}
-        with patch('builtins.__import__', side_effect=without_usb), patch.object(self.bridge, 'adb_transport', return_value=transport), patch('core.camera_sta_bridge.socket.socket'):
+        with patch('builtins.__import__', side_effect=without_usb), \
+                patch.object(self.bridge, 'adb_transport', return_value=transport), \
+                patch('core.camera_sta_bridge.socket.socket'), \
+                patch('core.camera_sta_bridge.subprocess.run', return_value=SimpleNamespace(returncode=0)) as adb:
             result = self.bridge.trigger_lan_recording('pocket4p', 'start')
+            stopped = self.bridge.trigger_lan_recording('pocket4p', 'stop')
+        for call, (value, action) in zip(adb.call_args_list, [('01', 'start'), ('00', 'stop')]):
+            argv = call.args[0]
+            self.assertEqual(argv[:4], [*transport['argv'], 'shell'])
+            self.assertIn(f'dji_mb_ctrl -S test -R diag -g 1 -t 0 -s 2 -c 0x02 {value}', argv[4])
+            self.assertIn(f'{action} > /tmp/pocket_coffee_cmd.new', argv[4])
+        self.assertEqual(adb.call_count, 2)
+        self.assertTrue(result['adb_shutter_dispatched'])
+        self.assertTrue(stopped['adb_shutter_dispatched'])
         self.assertTrue(result['adb_status']['ok'])
         self.assertEqual(result['adb_status']['transport'], 'usb')
         self.assertEqual(result['recording_state'], 'unknown')
         self.assertFalse(result['usb_dispatched'])
         camera = self.bridge.load_state()['cameras']['pocket4p']
         self.assertEqual(camera['adb_status']['serial'], '123456789ABCDEF')
-        self.assertEqual(camera['recording_requested_action'], 'start')
+        self.assertEqual(camera['recording_requested_action'], 'stop')
 
     def run_agent_functions(self, commands):
         functions = ON_CAMERA_AGENT_SCRIPT.split('json_escape() {', 1)[1].split("log 'Starting STA agent", 1)[0]
