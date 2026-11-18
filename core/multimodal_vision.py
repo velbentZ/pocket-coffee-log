@@ -18,6 +18,7 @@ Implements:
      automatically detects which camera is currently online/streaming/triggering and binds the session to it.
 """
 
+import base64
 from dataclasses import dataclass, asdict
 import json
 import os
@@ -25,6 +26,7 @@ import re
 import shutil
 import subprocess
 from typing import Any, Dict, List, Optional, Tuple
+from urllib import request as urllib_request
 from urllib.parse import urlparse
 
 
@@ -42,17 +44,38 @@ STAGE_TO_GIMBAL_PRESET: Dict[str, str] = {
     "yield_timer": "final_cup",
 }
 
+STAGE_FIELD_MAPPING: Dict[str, Tuple[str, ...]] = {
+    "scale_dose": ("bean_name", "bean_weight_g"),
+    "grinder_dial": ("grinder_type", "grinder_model", "grind_setting"),
+    "pressure_crema": ("pressure_bar", "water_temp_c"),
+    "yield_timer": ("yield_g", "extraction_time_s"),
+}
+
+VLM_TARGET_FIELDS = (
+    "bean_weight_g",
+    "grind_setting",
+    "grinder_model",
+    "pressure_bar",
+    "yield_g",
+    "extraction_time_s",
+)
+
 DEFAULT_FALLBACK_TIMESTAMPS = [12.5, 28.0, 64.0, 92.0]
 
 
 @dataclass
 class VisualFrameObservation:
     frame_stage: str
+    stage: str
+    stage_key: str
+    percentage: int
     timestamp_s: float
+    gimbal_preset: str
     detected_fields: Dict[str, Any]
     visual_description: str
     confidence: float = 0.94
     image_path: Optional[str] = None
+    extracted: bool = False
 
 
 class MultimodalVisionEngine:
@@ -102,6 +125,7 @@ class MultimodalVisionEngine:
         self,
         video_source: str,
         output_dir: Optional[str] = None,
+        extract_frames: bool = True,
     ) -> Dict[str, Any]:
         """
         Uses `ffprobe` / `ffmpeg` (when available on PATH and `video_source` is a reachable
@@ -182,7 +206,7 @@ class MultimodalVisionEngine:
         keyframes: List[Dict[str, Any]] = []
         extracted_count = 0
 
-        if is_local_file and ffmpeg_bin and duration_s and duration_s > 0:
+        if extract_frames and is_local_file and ffmpeg_bin and duration_s and duration_s > 0:
             os.makedirs(target_dir, exist_ok=True)
             for pct, stage_slug, stage_label in KEYFRAME_PLAN:
                 pct_int = int(round(pct * 100))
@@ -232,7 +256,9 @@ class MultimodalVisionEngine:
             if extracted_count == 0 and fallback_reason is None:
                 fallback_reason = "ffmpeg_frame_extraction_failed"
         else:
-            if fallback_reason is None and not ffmpeg_bin:
+            if not extract_frames and fallback_reason is None:
+                fallback_reason = "frame_extraction_disabled"
+            elif fallback_reason is None and not ffmpeg_bin:
                 fallback_reason = "ffmpeg_not_installed"
             elif fallback_reason is None:
                 fallback_reason = "duration_unavailable"
@@ -278,12 +304,196 @@ class MultimodalVisionEngine:
             "fallback_reason": None if extracted_count > 0 else fallback_reason,
         }
 
+    @staticmethod
+    def _normalize_vlm_fields(raw_payload: Any) -> Dict[str, Any]:
+        if not isinstance(raw_payload, dict):
+            return {}
+        normalized: Dict[str, Any] = {}
+        numeric_keys = {"bean_weight_g", "pressure_bar", "yield_g", "extraction_time_s"}
+        for key in VLM_TARGET_FIELDS:
+            val = raw_payload.get(key)
+            if val is None or val == "":
+                continue
+            if key in numeric_keys:
+                try:
+                    num = float(val)
+                    if num > 0:
+                        normalized[key] = round(num, 2)
+                except (TypeError, ValueError):
+                    m = re.search(r"([0-9]+(?:\.[0-9]+)?)", str(val))
+                    if m and float(m.group(1)) > 0:
+                        normalized[key] = round(float(m.group(1)), 2)
+            else:
+                text_val = str(val).strip()
+                if text_val and text_val.lower() not in ("null", "none", "unknown", "n/a"):
+                    if key == "grind_setting" and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text_val):
+                        text_val = f"刻度 {text_val}"
+                    normalized[key] = text_val
+        return normalized
+
+    @staticmethod
+    def _parse_json_object(raw_text: str) -> Dict[str, Any]:
+        cleaned = (raw_text or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+        try:
+            obj = json.loads(cleaned)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            m = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+            if m:
+                try:
+                    obj = json.loads(m.group(0))
+                    return obj if isinstance(obj, dict) else {}
+                except Exception:
+                    pass
+        return {}
+
+    def _inspect_keyframes_with_vlm(
+        self,
+        keyframes: List[Dict[str, Any]],
+        spoken_transcript: str = "",
+        camera_device: str = "DJI Osmo Pocket 4 Pro",
+    ) -> Tuple[Dict[str, Any], bool, Optional[str]]:
+        """
+        Optional live VLM inspection when `GEMINI_API_KEY` or `OPENAI_API_KEY` is configured
+        and extracted keyframe JPEGs exist on disk. Encodes keyframes as base64 and queries
+        for `bean_weight_g`, `grind_setting`, `grinder_model`, `pressure_bar`, `yield_g`,
+        and `extraction_time_s`. Falls back deterministically when offline or unconfigured.
+        """
+        gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        existing_frames = [
+            kf for kf in keyframes if kf.get("image_path") and os.path.isfile(str(kf["image_path"]))
+        ]
+        if (not gemini_key and not openai_key) or not existing_frames:
+            return {}, False, None
+
+        stage_summary = ", ".join(
+            f"{kf.get('percentage')}% {kf.get('stage_key')} (t={kf.get('timestamp_s')}s)"
+            for kf in existing_frames
+        )
+        prompt = (
+            f"You are inspecting {len(existing_frames)} coffee brewing keyframes captured by {camera_device} "
+            f"({stage_summary}). Spoken context: {spoken_transcript or 'none'}.\n"
+            "Read visible digital scale weights, grinder dial/model, espresso pressure gauge (bar), "
+            "shot yield (g), and shot timer (seconds). Return ONLY a JSON object with keys: "
+            '{"bean_weight_g": number|null, "grind_setting": string|null, "grinder_model": string|null, '
+            '"pressure_bar": number|null, "yield_g": number|null, "extraction_time_s": number|null}. '
+            "Use null for any parameter not clearly visible."
+        )
+
+        encoded_frames: List[Tuple[Dict[str, Any], str]] = []
+        for kf in existing_frames:
+            try:
+                with open(str(kf["image_path"]), "rb") as img_f:
+                    b64_data = base64.b64encode(img_f.read()).decode("ascii")
+                encoded_frames.append((kf, b64_data))
+            except Exception:
+                continue
+        if not encoded_frames:
+            return {}, False, None
+
+        try:
+            if gemini_key:
+                model_name = (
+                    self.vlm_provider
+                    if "gemini" in self.vlm_provider.lower()
+                    else "gemini-2.5-flash"
+                )
+                url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model_name}:generateContent?key={gemini_key}"
+                )
+                parts: List[Dict[str, Any]] = [{"text": prompt}]
+                for _, b64_str in encoded_frames:
+                    parts.append(
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": b64_str,
+                            }
+                        }
+                    )
+                req_body = json.dumps(
+                    {
+                        "contents": [{"parts": parts}],
+                        "generationConfig": {
+                            "responseMimeType": "application/json",
+                            "temperature": 0.1,
+                        },
+                    }
+                ).encode("utf-8")
+                req = urllib_request.Request(
+                    url,
+                    data=req_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib_request.urlopen(req, timeout=12) as resp:
+                    resp_json = json.loads(resp.read().decode("utf-8"))
+                candidates = resp_json.get("candidates") or []
+                text_out = ""
+                if candidates:
+                    c_parts = (candidates[0].get("content") or {}).get("parts") or []
+                    text_out = "".join(str(p.get("text", "")) for p in c_parts)
+                parsed = self._normalize_vlm_fields(self._parse_json_object(text_out))
+                return parsed, True, model_name
+
+            if openai_key:
+                model_name = (
+                    self.vlm_provider
+                    if any(tok in self.vlm_provider.lower() for tok in ("gpt", "o1", "o3", "o4"))
+                    else "gpt-4o-mini"
+                )
+                base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+                url = f"{base_url}/chat/completions"
+                content_items: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+                for _, b64_str in encoded_frames:
+                    content_items.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64_str}"},
+                        }
+                    )
+                req_body = json.dumps(
+                    {
+                        "model": model_name,
+                        "messages": [{"role": "user", "content": content_items}],
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0.1,
+                    }
+                ).encode("utf-8")
+                req = urllib_request.Request(
+                    url,
+                    data=req_body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {openai_key}",
+                    },
+                    method="POST",
+                )
+                with urllib_request.urlopen(req, timeout=12) as resp:
+                    resp_json = json.loads(resp.read().decode("utf-8"))
+                choices = resp_json.get("choices") or []
+                text_out = ""
+                if choices:
+                    text_out = str((choices[0].get("message") or {}).get("content") or "")
+                parsed = self._normalize_vlm_fields(self._parse_json_object(text_out))
+                return parsed, True, model_name
+        except Exception:
+            return {}, False, None
+
+        return {}, False, None
+
     def analyze_video_keyframes(
         self,
         video_path: Optional[str],
         spoken_transcript: str = "",
         camera_device: str = "DJI Osmo Pocket 4 Pro",
         hint_overrides: Optional[Dict[str, Any]] = None,
+        extract_frames: bool = True,
     ) -> Dict[str, Any]:
         """
         Analyzes key visual moments from the Pocket 3 / Pocket 4 Pro video recording
@@ -291,8 +501,24 @@ class MultimodalVisionEngine:
         `http://192.168.5.93:8088/DJI_001/...`) to recover any parameters the user
         didn't explicitly speak aloud.
         """
-        meta = self.extract_video_metadata_and_frames(video_path or "")
+        if video_path:
+            meta = self.extract_video_metadata_and_frames(video_path, extract_frames=extract_frames)
+        else:
+            meta = self.extract_video_metadata_and_frames("", extract_frames=False)
+
         kf_list = meta["keyframes"]
+        vlm_fields, vlm_live_used, active_vlm_model = self._inspect_keyframes_with_vlm(
+            kf_list,
+            spoken_transcript=spoken_transcript,
+            camera_device=camera_device,
+        )
+
+        merged_visual_fields: Dict[str, Any] = dict(vlm_fields)
+        if hint_overrides:
+            merged_visual_fields.update(
+                {k: v for k, v in hint_overrides.items() if v is not None}
+            )
+
         src_note = (
             f"远程 STA 媒体流 ({video_path})"
             if meta["is_remote_url"]
@@ -310,23 +536,37 @@ class MultimodalVisionEngine:
             f"{src_note}：萃取结束时电子秤左屏读秒与右屏液重读数",
         ]
 
-        observations: List[VisualFrameObservation] = [
-            VisualFrameObservation(
-                frame_stage=kf["stage"],
-                timestamp_s=kf["timestamp_s"],
-                detected_fields={},
-                visual_description=descriptions[i],
-                image_path=kf.get("image_path"),
+        observations: List[VisualFrameObservation] = []
+        for i, kf in enumerate(kf_list):
+            stage_key = str(kf.get("stage_key") or "")
+            raw_img_path = kf.get("image_path")
+            has_file = bool(kf.get("extracted") and raw_img_path and os.path.isfile(str(raw_img_path)))
+            stage_detected = {
+                field_name: merged_visual_fields[field_name]
+                for field_name in STAGE_FIELD_MAPPING.get(stage_key, ())
+                if field_name in merged_visual_fields and merged_visual_fields[field_name] is not None
+            }
+            observations.append(
+                VisualFrameObservation(
+                    frame_stage=kf["stage"],
+                    stage=kf["stage"],
+                    stage_key=stage_key,
+                    percentage=int(kf.get("percentage", 0)),
+                    timestamp_s=float(kf["timestamp_s"]),
+                    gimbal_preset=str(
+                        kf.get("gimbal_preset") or STAGE_TO_GIMBAL_PRESET.get(stage_key, "reset_center")
+                    ),
+                    detected_fields=stage_detected,
+                    visual_description=descriptions[i] if i < len(descriptions) else src_note,
+                    confidence=0.97 if vlm_live_used else 0.94,
+                    image_path=str(raw_img_path) if has_file else None,
+                    extracted=has_file,
+                )
             )
-            for i, kf in enumerate(kf_list)
-        ]
-
-        merged_visual_fields: Dict[str, Any] = {}
-        if hint_overrides:
-            merged_visual_fields.update(hint_overrides)
 
         return {
-            "vlm_model": self.vlm_provider,
+            "vlm_model": active_vlm_model or self.vlm_provider,
+            "vlm_live_used": vlm_live_used,
             "camera_device": camera_device,
             "video_path": video_path or "LAN_STA_STREAM",
             "source_type": meta["source_type"],

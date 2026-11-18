@@ -12,6 +12,6 @@ snapshot:
 server:
 	PORT=8788 python3 server/app.py
 
-# Provision Pocket 3 / Pocket 4 Pro into persistent LAN STA mode
+# Recover the installed Pocket 4 Pro agent over USB ADB and verify LAN STA
 provision:
-	python3 daemon/provision_camera_sta.py --device pocket4p --ssid "Home_Coffee_LAN" --password "coffee123456" --lan-ip 192.168.5.108 --exec "iw dev wlan0 info && ps"
+	python3 daemon/provision_camera_sta.py --device pocket4p

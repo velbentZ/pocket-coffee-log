@@ -3,6 +3,8 @@ import os
 import json
 import struct
 import subprocess
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 from types import ModuleType, SimpleNamespace
@@ -11,6 +13,7 @@ from unittest.mock import Mock, patch
 
 from core.camera_sta_bridge import CameraInternalBridge, ON_CAMERA_AGENT_SCRIPT
 from core import camera_sta_bridge
+from daemon import provision_camera_sta
 
 
 class CameraSTABridgeTests(unittest.TestCase):
@@ -195,6 +198,31 @@ echo launched >> "$base/launches"
         with patch.object(self.bridge, 'list_remote_media', return_value={'ok': True, 'files': [media]}), patch('core.camera_sta_bridge.urllib_request.urlopen', return_value=io.BytesIO(b'123')):
             self.assertFalse(self.bridge.pull_latest_media()['ok'])
 
+    def test_pull_selects_newest_named_or_smallest_nonempty_mp4(self):
+        files = [dict(name=name, url='http://camera/' + name, size_bytes=size)
+                 for name, size in [('new.MP4', 8), ('empty.MP4', 0),
+                                    ('small.MP4', 2), ('other.MP4', 4)]]
+        for options, selected in [({}, files[0]), ({'prefer_smallest': True}, files[2]),
+                                  ({'filename': 'other.MP4'}, files[3])]:
+            contents = b'x' * selected['size_bytes']
+            with self.subTest(options=options), patch.object(
+                self.bridge, 'list_remote_media', return_value={'ok': True, 'files': files},
+            ), patch('core.camera_sta_bridge.urllib_request.urlopen', return_value=io.BytesIO(contents)) as get:
+                result = self.bridge.pull_latest_media(**options)
+                self.assertTrue(result['ok'])
+                self.assertFalse(result['partial'])
+                self.assertEqual(get.call_args.args[0].full_url, selected['url'])
+                self.assertEqual(Path(result['local_path']).name, selected['name'])
+                self.assertEqual(Path(result['local_path']).read_bytes(), contents)
+
+    def test_pull_rejects_unlisted_filename_and_conflicting_selection(self):
+        media = {'name': 'DJI_0036.MP4', 'url': 'http://camera/file', 'size_bytes': 10}
+        with patch.object(self.bridge, 'list_remote_media', return_value={'ok': True, 'files': [media]}), \
+                patch('core.camera_sta_bridge.urllib_request.urlopen') as get:
+            self.assertFalse(self.bridge.pull_latest_media(filename='../DJI_0036.MP4')['ok'])
+            self.assertFalse(self.bridge.pull_latest_media(filename=media['name'], prefer_smallest=True)['ok'])
+            get.assert_not_called()
+
     def test_recording_reports_adb_without_claiming_recording_confirmed(self):
         import builtins
         original_import = builtins.__import__
@@ -269,6 +297,80 @@ watch_mp4
         self.assertEqual(payloads[0]['file_path'], '/media/new.MP4')
         self.assertEqual(payloads[0]['media_url'], 'http://192.168.5.93:8088/DJI_001/new.MP4')
         self.assertEqual(Path(self.temp.name, 'last_mp4.txt').read_text().strip(), 'new.MP4')
+
+
+class ProvisionCameraCLITests(unittest.TestCase):
+    def setUp(self):
+        self.bridge = Mock(spec=CameraInternalBridge)
+        self.state = {
+            'sta_network': {'ssid': '你的名字', 'password': 'test-secret', 'mac_server_ip': '192.168.5.84'},
+            'cameras': {'pocket4p': {'lan_ip': '192.168.5.2', 'verification': {'verified_sta_ip': '192.168.5.93'}}},
+        }
+        self.bridge.load_state.return_value = self.state
+        self.bridge.ensure_sta_agent_over_usb.return_value = {
+            'ok': True, 'serial': '123456789ABCDEF', 'status': 'already_running',
+        }
+        self.url = 'http://192.168.5.93:8088/DJI_001/small.MP4'
+
+    def heartbeat(self, observed_at, source='192.168.5.93'):
+        camera = self.state['cameras']['pocket4p']
+        camera.update(lan_ip='192.168.5.93', wifi_mode='STA', last_heartbeat=observed_at.isoformat(),
+                      latest_media_url=self.url)
+        camera['verification'].update(heartbeat_verified=True, heartbeat_source_ip=source)
+
+    def run_cli(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(provision_camera_sta, 'CameraInternalBridge', return_value=self.bridge), \
+                redirect_stdout(out), redirect_stderr(err):
+            status = provision_camera_sta.main(list(args))
+        return status, out.getvalue(), err.getvalue()
+
+    def test_status_recovers_agent_and_reports_fresh_heartbeat_at_verified_ip(self):
+        def recover(*args, **kwargs):
+            self.heartbeat(datetime.now(timezone.utc))
+            return self.bridge.ensure_sta_agent_over_usb.return_value
+
+        self.bridge.ensure_sta_agent_over_usb.side_effect = recover
+        status, out, _ = self.run_cli('--device', 'pocket4p', '--status')
+        self.assertEqual(status, 0)
+        self.bridge.ensure_sta_agent_over_usb.assert_called_once_with('pocket4p', restart_if_stopped=True)
+        self.bridge.provision_sta_mode.assert_not_called()
+        self.bridge.pull_latest_media.assert_not_called()
+        self.assertIn('123456789ABCDEF', out)
+        self.assertIn('heartbeat', out)
+        self.assertIn(self.url, out)
+        self.assertNotIn('test-secret', out)
+
+    def test_pull_latest_uses_full_download_and_allows_check_only(self):
+        self.bridge.pull_latest_media.return_value = {'ok': True, 'local_path': '/cache/small.MP4', 'size_bytes': 42}
+        live = {'last_heartbeat': datetime.now(timezone.utc).isoformat(), 'latest_media_url': self.url}
+        with patch.object(provision_camera_sta, '_wait_for_heartbeat', return_value=live):
+            status, out, _ = self.run_cli('--pull-latest', '--no-recover-adb')
+        self.assertEqual(status, 0)
+        self.bridge.ensure_sta_agent_over_usb.assert_called_once_with('pocket4p', restart_if_stopped=False)
+        self.bridge.pull_latest_media.assert_called_once_with('pocket4p')
+        self.assertIn('/cache/small.MP4', out)
+
+    def test_wait_rejects_cached_or_wrong_source_heartbeat(self):
+        now = datetime.now(timezone.utc)
+        for observed_at, source in [(now - timedelta(seconds=60), '192.168.5.93'), (now, '192.168.5.2')]:
+            with self.subTest(observed_at=observed_at, source=source):
+                self.heartbeat(observed_at, source)
+                result = provision_camera_sta._wait_for_heartbeat(self.bridge, 'pocket4p', '192.168.5.93', now, timeout=0)
+                self.assertIsNone(result)
+
+    def test_legacy_request_uses_config_defaults_and_explicit_overrides(self):
+        self.bridge.provision_sta_mode.return_value = {'ok': False, 'error': 'Delivery unverified'}
+        for args, expected in [([], ('你的名字', 'test-secret', '192.168.5.93')),
+                               (['--ssid', 'Other', '--password', 'override', '--lan-ip', '192.168.5.9'],
+                                ('Other', 'override', '192.168.5.9'))]:
+            with self.subTest(args=args):
+                ssid, password, ip = expected
+                status, out, err = self.run_cli('--legacy-duml', *args)
+                self.assertEqual(status, 1)
+                self.bridge.provision_sta_mode.assert_called_with(
+                    device_id='pocket4p', ssid=ssid, password=password, lan_ip=ip, mac_server_ip='192.168.5.84')
+                self.assertNotIn(password, out + err)
 
 
 if __name__ == '__main__':

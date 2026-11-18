@@ -1,6 +1,7 @@
 """Unit and HTTP integration tests for Pocket Coffee Studio pipeline enhancements."""
 
 from datetime import datetime, timedelta
+from io import BytesIO
 import json
 import os
 import subprocess
@@ -14,6 +15,7 @@ from urllib.parse import quote
 
 from core.bean_equipment_store import BeanAndEquipmentManager, compute_freshness_metrics
 from core.camera_sta_bridge import CameraInternalBridge
+from core.context_engine import ProjectMemoryManager
 from core.multimodal_vision import MultimodalVisionEngine
 from core.notifier import NotificationManager
 from core.store import CoffeeStore
@@ -90,6 +92,52 @@ class TestMultimodalVisionKeyframes(unittest.TestCase):
             for kf in meta["keyframes"]:
                 self.assertTrue(kf["extracted"])
                 self.assertTrue(os.path.isfile(kf["image_path"]))
+
+            # Also verify OpenAI VLM inspection path + extract_frames=False
+            class FakeOpenAIResp:
+                def read(self):
+                    return json.dumps(
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": json.dumps(
+                                            {
+                                                "bean_weight_g": 18.0,
+                                                "grind_setting": "刻度 14.0",
+                                                "grinder_model": "Niche Zero",
+                                                "pressure_bar": 9.0,
+                                                "yield_g": 36.0,
+                                                "extraction_time_s": 29.0,
+                                            }
+                                        )
+                                    }
+                                }
+                            ]
+                        }
+                    ).encode("utf-8")
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            with patch("core.multimodal_vision.shutil.which", side_effect=fake_which), patch(
+                "core.multimodal_vision.subprocess.run", side_effect=fake_run
+            ), patch(
+                "core.multimodal_vision.urllib_request.urlopen", return_value=FakeOpenAIResp()
+            ), patch.dict(
+                os.environ, {"GEMINI_API_KEY": "", "OPENAI_API_KEY": "sk-test-openai"}, clear=False
+            ):
+                oai_analysis = engine.analyze_video_keyframes(local_mp4)
+                self.assertTrue(oai_analysis["vlm_live_used"])
+                self.assertEqual(oai_analysis["visual_fields"]["pressure_bar"], 9.0)
+                self.assertEqual(oai_analysis["frame_observations"][2]["detected_fields"]["pressure_bar"], 9.0)
+
+                no_ext = engine.analyze_video_keyframes(local_mp4, extract_frames=False)
+                self.assertFalse(no_ext["vlm_live_used"])
+                self.assertTrue(all(not obs["extracted"] for obs in no_ext["frame_observations"]))
 
 
 class TestCoffeeServerAndComparisonPipeline(unittest.TestCase):
@@ -400,6 +448,190 @@ class TestCoffeeServerAndComparisonPipeline(unittest.TestCase):
         self.assertEqual(p_res["local_path"], sample_mp4)
         self.assertIn("video_metadata", p_res)
         self.assertEqual(len(p_res["keyframes"]), 4)
+
+    def test_pull_media_downloads_requested_filename_instead_of_newest(self) -> None:
+        base_url = "http://192.168.5.93:8088/DJI_001/"
+        newest = "DJI_NEWEST.MP4"
+        requested = "DJI_REQUESTED.MP4"
+        contents = b"camera MP4 bytes"
+        files = [
+            {"name": name, "url": base_url + name, "size_bytes": len(contents)}
+            for name in (newest, requested)
+        ]
+        with patch.object(
+            self.camera_bridge, "list_remote_media", return_value={"ok": True, "files": files}
+        ), patch("core.camera_sta_bridge.urllib_request.urlopen", return_value=BytesIO(contents)):
+            status, result = self.request_json(
+                "POST", "/api/camera/pull_media",
+                {"device_id": "pocket4p", "filename": requested, "extract_keyframes": False},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["media_url"], base_url + requested)
+        self.assertEqual(os.path.basename(result["local_path"]), requested)
+        with open(result["local_path"], "rb") as clip:
+            self.assertEqual(clip.read(), contents)
+
+    def test_vlm_live_keyframe_inspection_and_stop_and_process_attachment(self) -> None:
+        local_mp4 = os.path.join(self.data_dir, "DJI_0042.MP4")
+        with open(local_mp4, "wb") as f:
+            f.write(b"\x00\x00\x00\x1cftypisom" + b"\x00" * 128)
+
+        media_url = "http://192.168.5.93:8088/DJI_001/DJI_0042.MP4"
+
+        def fake_which(cmd: str):
+            if cmd in ("ffprobe", "ffmpeg"):
+                return f"/usr/local/bin/{cmd}"
+            return None
+
+        def fake_run(argv, **kwargs):
+            exe = os.path.basename(argv[0])
+            if exe == "ffprobe":
+                payload = {
+                    "streams": [{"width": 3840, "height": 2160, "duration": "60.0"}],
+                    "format": {"duration": "60.0", "size": "2048000"},
+                }
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
+            if exe == "ffmpeg":
+                out_jpg = argv[-1]
+                os.makedirs(os.path.dirname(out_jpg), exist_ok=True)
+                with open(out_jpg, "wb") as img_f:
+                    img_f.write(b"\xff\xd8\xff\xe0VLMFRAME\xff\xd9")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="unknown")
+
+        captured_requests = []
+
+        class FakeHTTPResponse:
+            def __init__(self, body_dict):
+                self._raw = json.dumps(body_dict).encode("utf-8")
+
+            def read(self):
+                return self._raw
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        def fake_urlopen(req, timeout=12):
+            captured_requests.append(json.loads(req.data.decode("utf-8")))
+            return FakeHTTPResponse(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": json.dumps(
+                                            {
+                                                "bean_weight_g": 19.2,
+                                                "grind_setting": "13.5",
+                                                "grinder_model": "DF64 Gen2",
+                                                "pressure_bar": 9.1,
+                                                "yield_g": 36.5,
+                                                "extraction_time_s": 28.0,
+                                            }
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        # User speech mentions bean_name ("花魁"), bean_weight_g (18.5g), and brew_method ("意式浓缩"),
+        # while omitting grind_setting, pressure_bar, yield_g, and extraction_time_s -> recovered by VLM!
+        with patch("core.multimodal_vision.shutil.which", side_effect=fake_which), patch(
+            "core.multimodal_vision.subprocess.run", side_effect=fake_run
+        ), patch("core.multimodal_vision.urllib_request.urlopen", side_effect=fake_urlopen), patch.dict(
+            os.environ, {"GEMINI_API_KEY": "test-gemini-key", "OPENAI_API_KEY": ""}, clear=False
+        ):
+            res = self.voice_manager.stop_and_process(
+                override_transcript="我要开始制作咖啡。今天用花魁，称重 18.5 克，做意式浓缩。制作完成。",
+                media_url=media_url,
+                video_path=local_mp4,
+            )
+
+        # Verify base64 JPEG encoding was sent to VLM API
+        self.assertEqual(len(captured_requests), 1)
+        sent_parts = captured_requests[0]["contents"][0]["parts"]
+        self.assertEqual(len(sent_parts), 5)  # 1 text prompt + 4 base64 keyframes
+        self.assertEqual(sent_parts[1]["inline_data"]["mime_type"], "image/jpeg")
+
+        rec_dict = res["record"]
+        self.assertEqual(rec_dict["media_url"], media_url)
+        self.assertEqual(len(rec_dict["keyframes"]), 4)
+        self.assertEqual(
+            [kf["percentage"] for kf in rec_dict["keyframes"]],
+            [15, 35, 70, 90],
+        )
+        self.assertEqual(
+            [kf["gimbal_preset"] for kf in rec_dict["keyframes"]],
+            ["scale_dose", "grinder_dial", "espresso_gauge", "final_cup"],
+        )
+        for kf in rec_dict["keyframes"]:
+            self.assertTrue(kf["extracted"])
+            self.assertTrue(os.path.isfile(kf["image_path"]))
+
+        # Spoken 18.5g must NOT be overwritten by VLM's 19.2g, while missing fields ARE recovered
+        self.assertEqual(rec_dict["bean_weight_g"], 18.5)
+        self.assertEqual(rec_dict["grind_setting"], "刻度 13.5")
+        self.assertEqual(rec_dict["grinder_model"], "DF64 Gen2")
+        self.assertEqual(rec_dict["pressure_bar"], 9.1)
+        self.assertEqual(rec_dict["yield_g"], 36.5)
+        self.assertEqual(rec_dict["extraction_time_s"], 28.0)
+        self.assertEqual(rec_dict["status"], "complete")
+
+        # Verify provenance recorded as source="video_frame_ocr" for VLM-recovered fields
+        prov_map = res["compacted_context"]["provenance_map"]
+        self.assertEqual(prov_map["bean_weight_g"]["source"], "voice_utterance")
+        self.assertEqual(prov_map["grind_setting"]["source"], "video_frame_ocr")
+        self.assertEqual(prov_map["pressure_bar"]["source"], "video_frame_ocr")
+        self.assertEqual(prov_map["yield_g"]["source"], "video_frame_ocr")
+        self.assertEqual(prov_map["extraction_time_s"]["source"], "video_frame_ocr")
+        self.assertTrue(res["compacted_context"]["invariants_verified"])
+
+        # Verify persisted CoffeeRecord in store retains keyframes & media_url and keyframe HTTP route works
+        persisted = self.store.get_record(rec_dict["id"])
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted.media_url, media_url)
+        self.assertEqual(len(persisted.keyframes), 4)
+
+        conn = HTTPConnection(*self.server.server_address)
+        conn.request("GET", f"/api/media/keyframe?path={quote(rec_dict['keyframes'][0]['image_path'])}")
+        kf_resp = conn.getresponse()
+        kf_bytes = kf_resp.read()
+        conn.close()
+        self.assertEqual(kf_resp.status, 200)
+        self.assertTrue(kf_bytes.startswith(b"\xff\xd8\xff"))
+
+    def test_project_memory_manager_schema_3_0_0_snapshot_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as proj_tmp:
+            mgr = ProjectMemoryManager(proj_tmp)
+            snap = mgr.refresh_snapshot()
+            self.assertEqual(snap["schema_version"], "3.0.0")
+
+            backlog_by_id = {item["id"]: item for item in snap["iteration_backlog"]}
+            self.assertIn("ITER-05", backlog_by_id)
+            self.assertIn("ITER-06", backlog_by_id)
+            self.assertEqual(backlog_by_id["ITER-05"]["status"], "done")
+            self.assertEqual(backlog_by_id["ITER-06"]["status"], "done")
+            self.assertIn("OsmoPocket4P-ANHXP5J0022DTW", backlog_by_id["ITER-05"]["title"])
+            self.assertIn("192.168.5.93", backlog_by_id["ITER-05"]["title"])
+            self.assertIn("/data/pocket-coffee/pocket_sta_agent.sh", backlog_by_id["ITER-05"]["title"])
+            self.assertIn("/mnt/media_rw/emulated/DCIM/DJI_001", backlog_by_id["ITER-05"]["title"])
+            self.assertIn("04:14", backlog_by_id["ITER-06"]["title"])
+
+            with open(mgr.snapshot_md_path, "r", encoding="utf-8") as md_f:
+                md_content = md_f.read()
+            self.assertIn("`3.0.0`", md_content)
+            self.assertIn("/data/pocket-coffee/pocket_sta_agent.sh", md_content)
+            self.assertIn("/mnt/media_rw/emulated/DCIM/DJI_001", md_content)
+            self.assertIn("ITER-06", md_content)
 
 
 if __name__ == "__main__":

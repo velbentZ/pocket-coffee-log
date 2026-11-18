@@ -46,6 +46,7 @@ class CoffeeRecord:
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     camera_device: str = "DJI Osmo Pocket 4 Pro"  # or "DJI Osmo Pocket 3"
     video_path: Optional[str] = None
+    media_url: Optional[str] = None
     transcript: str = ""
 
     # Core parameters requested by user
@@ -70,6 +71,7 @@ class CoffeeRecord:
     flavor_notes: List[str] = field(default_factory=list)
     flavor_profile: Dict[str, float] = field(default_factory=lambda: asdict(FlavorProfile()))
     timeline_events: List[Dict[str, Any]] = field(default_factory=list)
+    keyframes: List[Dict[str, Any]] = field(default_factory=list)
 
     # Status & missing info tracking
     missing_fields: List[Dict[str, str]] = field(default_factory=list)

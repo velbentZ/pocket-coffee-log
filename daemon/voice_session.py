@@ -167,6 +167,7 @@ class VoiceWakeupSessionManager:
         camera_id: Optional[str] = None,
         media_url: Optional[str] = None,
         video_path: Optional[str] = None,
+        hint_overrides: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         cam_id = camera_id or self.active_session.get("camera_id", "pocket4p")
         cam_state = self.camera_bridge.load_state()["cameras"].get(cam_id, {})
@@ -177,29 +178,34 @@ class VoiceWakeupSessionManager:
         shutter_stop = self.camera_bridge.trigger_lan_recording(cam_id, action="stop")
 
         # 2. Resolve camera media URL and verified /mnt/media_rw/emulated/DCIM/DJI_001/... path
-        discovered_media_url = (
-            (media_url or "").strip()
+        explicit_video_path = (video_path or "").strip() or None
+        explicit_media_url = (media_url or "").strip() or None
+        resolved_media_url = (
+            explicit_media_url
+            or (
+                explicit_video_path
+                if (explicit_video_path and explicit_video_path.startswith(("http://", "https://")))
+                else ""
+            )
             or (cam_state.get("latest_media_url") or "").strip()
             or (cam_state.get("verification", {}).get("media_http_url") or "").strip()
             or None
         )
         latest_file_name = (
             os.path.basename(cam_state.get("latest_media_file") or "")
-            or (os.path.basename(discovered_media_url) if discovered_media_url else "")
+            or (os.path.basename(resolved_media_url) if resolved_media_url else "")
             or f"DJI_{datetime.now().strftime('%Y%m%d_%H%M%S')}.MP4"
         )
         default_camera_path = f"/mnt/media_rw/emulated/DCIM/DJI_001/{latest_file_name}"
 
-        explicit_video_path = (video_path or "").strip() or None
-        explicit_media_url = (media_url or "").strip() or None
         if explicit_video_path and os.path.isfile(explicit_video_path):
             video_file = explicit_video_path
         elif explicit_media_url:
             video_file = explicit_media_url
         elif explicit_video_path:
             video_file = explicit_video_path
-        elif discovered_media_url:
-            video_file = discovered_media_url
+        elif resolved_media_url:
+            video_file = resolved_media_url
         else:
             video_file = default_camera_path
 
@@ -222,36 +228,58 @@ class VoiceWakeupSessionManager:
             utterances = [{"text": full_transcript, "source": "voice_utterance", "timestamp": datetime.now().strftime("%H:%M:%S")}]
 
         compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
+        spoken_canonical = dict(compacted.canonical_parameters)
 
         # 4. Run MultimodalVisionEngine keyframe inspection & match Personal Bean Library
         vision_analysis = self.vision_engine.analyze_video_keyframes(
             video_path=video_file,
             spoken_transcript=full_transcript,
             camera_device=model,
+            hint_overrides=hint_overrides,
+        )
+        visual_fields: Dict[str, Any] = dict(vision_analysis.get("visual_fields") or {})
+        visual_provenance = self.compactor.merge_visual_parameters(
+            compacted,
+            visual_fields,
+            evidence_source=video_file,
         )
 
         lib_data = self.bean_manager.load_all()
         matched_bean = self.bean_manager.match_bean_by_text(full_transcript)
-        overrides: Dict[str, Any] = dict(vision_analysis.get("visual_fields") or {})
-        overrides.update(compacted.canonical_parameters)
+        overrides: Dict[str, Any] = dict(visual_fields)
+        overrides.update(spoken_canonical)
         if matched_bean:
             overrides["_bean_library_match"] = matched_bean
         if lib_data.get("equipment"):
             overrides["_equipment_defaults"] = lib_data["equipment"]
 
-        # 5. Build CoffeeRecord from canonical parameters + Bean Library + Equipment Defaults
+        # 5. Build CoffeeRecord from canonical parameters + VLM recovery + Bean Library + Equipment Defaults
         record = extract_parameters_from_transcript(
             transcript=full_transcript,
             camera_device=model,
             video_path=video_file,
             visual_Overrides=overrides,
         )
-        # Ensure canonical overridden values (e.g. from self-corrections) take precedence
-        for k, v in compacted.canonical_parameters.items():
+        # Ensure canonical spoken values (e.g. from self-corrections) take precedence
+        for k, v in spoken_canonical.items():
             if v is not None and hasattr(record, k):
                 setattr(record, k, v)
+        # Merge VLM-recovered fields for any parameter missing from speech
+        for k, prov in visual_provenance.items():
+            rec_val = prov.get("value")
+            if rec_val is not None and spoken_canonical.get(k) is None and hasattr(record, k):
+                setattr(record, k, rec_val)
+                if k == "grinder_model" and spoken_canonical.get("grinder_type") is None:
+                    if any(tok in str(rec_val) for tok in ("内置", "自带", "Breville", "铂富", "德龙")):
+                        record.grinder_type = "咖啡机自带磨豆机"
+                    elif not record.grinder_type:
+                        record.grinder_type = "额外独立磨豆机"
+
         if matched_bean and matched_bean.get("full_name"):
             record.bean_name = matched_bean["full_name"]
+
+        record.keyframes = list(vision_analysis.get("frame_observations") or [])
+        record.media_url = resolved_media_url
         record.compute_derived_metrics()
         enrich_barista_analysis(record)
         self.store.save_record(record)
@@ -287,10 +315,11 @@ class VoiceWakeupSessionManager:
         return {
             "auto_stopped": True,
             "reason": reason,
-            "media_url": discovered_media_url,
+            "media_url": resolved_media_url,
             "video_path": video_file,
             "camera_file_path": explicit_video_path or default_camera_path,
             "vision_analysis": vision_analysis,
+            "visual_provenance": visual_provenance,
             "bean_inventory": bean_inventory,
             "session": self.active_session,
             "compacted_context": compacted.to_dict(),

@@ -46,7 +46,7 @@ class TestContextCompactionAndModularity(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mgr = ProjectMemoryManager(tmpdir)
             snap = mgr.refresh_snapshot()
-            self.assertEqual(snap["schema_version"], "2.0.0")
+            self.assertEqual(snap["schema_version"], "3.0.0")
             self.assertTrue(os.path.exists(mgr.snapshot_json_path))
             self.assertTrue(os.path.exists(mgr.snapshot_md_path))
             self.assertTrue(len(snap["hard_invariants"]) >= 5)

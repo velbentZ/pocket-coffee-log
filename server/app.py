@@ -393,9 +393,14 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/media/keyframe":
-            rel_or_abs = (qs.get("path") or [""])[0]
+            rel_or_abs = (qs.get("path") or [""])[0].strip()
             base_dir = os.path.realpath(vision_engine.data_dir)
-            target = os.path.realpath(rel_or_abs) if rel_or_abs else ""
+            target = ""
+            if rel_or_abs:
+                cand = os.path.realpath(rel_or_abs)
+                if not (cand.startswith(base_dir + os.sep) and os.path.isfile(cand)):
+                    cand = os.path.realpath(os.path.join(base_dir, rel_or_abs.lstrip("/")))
+                target = cand
             if not target or not (target.startswith(base_dir + os.sep)) or not os.path.isfile(target):
                 self._send_json({"ok": False, "error": "Keyframe image not found"}, status=404)
                 return
@@ -404,6 +409,8 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "image/jpeg")
             self.send_header("Content-Length", str(len(raw_img)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "public, max-age=3600")
             self.end_headers()
             self.wfile.write(raw_img)
             return
@@ -449,6 +456,7 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             cam_id = body.get("camera_id")
             media_url = body.get("media_url")
             video_path = body.get("video_path") or body.get("file_path")
+            hint_overrides = body.get("hint_overrides") or body.get("visual_hints")
             reason = body.get("reason", "检测到咖啡制作结束，自动停止录制并生成报告")
             result = voice_manager.stop_and_process(
                 reason=reason,
@@ -456,6 +464,7 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 camera_id=cam_id,
                 media_url=media_url,
                 video_path=video_path,
+                hint_overrides=hint_overrides,
             )
             self._send_json({"ok": True, **result})
             return
@@ -586,13 +595,9 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                     status=501,
                 )
                 return
-            try:
-                if max_bytes is not None:
-                    pull_res = pull_fn(device_id=device_id, max_bytes=max_bytes)
-                else:
-                    pull_res = pull_fn(device_id=device_id)
-            except TypeError:
-                pull_res = pull_fn(device_id)
+            pull_res = pull_fn(
+                device_id=device_id, max_bytes=max_bytes, filename=body.get("filename")
+            )
 
             if pull_res.get("ok") and pull_res.get("local_path") and extract_keyframes:
                 video_meta = vision_engine.extract_video_metadata_and_frames(pull_res["local_path"])
@@ -612,6 +617,7 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             file_path = body.get("file_path") or body.get("video_path")
             media_url = body.get("media_url")
             transcript = body.get("transcript")
+            hint_overrides = body.get("hint_overrides") or body.get("visual_hints")
             clip_name = os.path.basename(
                 file_path or media_url or "/mnt/media_rw/emulated/DCIM/DJI_001/DJI_AUTO.MP4"
             )
@@ -621,6 +627,7 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 camera_id=camera_id,
                 media_url=media_url,
                 video_path=file_path,
+                hint_overrides=hint_overrides,
             )
             self._send_json({"ok": True, "webhook_processed": True, **res})
             return

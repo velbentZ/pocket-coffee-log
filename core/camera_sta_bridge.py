@@ -185,6 +185,7 @@ agent_running() {
 }
 if [ ! -f "$agent" ]; then echo not_installed; exit 0; fi
 if agent_running; then echo already_running; exit 0; fi
+if [ "${check_only:-0}" = 1 ]; then echo not_running; exit 0; fi
 busybox nohup /system/bin/sh "$agent" </dev/null >"$base/console.log" 2>&1 &
 for attempt in 1 2 3; do
     sleep 1
@@ -664,27 +665,35 @@ class CameraInternalBridge:
             "log_entry": log_entry,
         }
 
+    def ensure_sta_agent_over_usb(self, device_id: str, *, restart_if_stopped: bool = True) -> Dict[str, Any]:
+        """Check the installed HG224 agent and optionally start it over live USB ADB."""
+        transport = self.adb_transport(device_id)
+        if not transport["ok"] or transport.get("transport") != "usb":
+            return {"ok": False, "status": "usb_unavailable",
+                    "error": transport.get("error") or "Live USB ADB is required"}
+        serial = transport["serial"]
+        command = ("" if restart_if_stopped else "check_only=1\n") + _ADB_ENSURE_STA_AGENT
+        try:
+            proc = subprocess.run(transport["argv"] + ["shell", command],
+                                  capture_output=True, text=True, timeout=10)
+            status = proc.stdout.strip()
+            if proc.returncode == 0 and status in ("already_running", "started", "not_installed", "not_running"):
+                return {"ok": status in ("already_running", "started"), "status": status, "serial": serial}
+            error = proc.stderr.strip() or status or "No agent process confirmed"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            error = str(exc)
+        return {"ok": False, "status": "start_unconfirmed", "serial": serial, "error": error}
+
     def auto_provision_if_usb_connected(self) -> Dict[str, Any]:
         """Recover an installed Pocket 4 Pro agent over USB, or try legacy STA provisioning."""
-        transport = self.adb_transport("pocket4p")
-        if transport["ok"] and transport.get("transport") == "usb":
-            try:
-                proc = subprocess.run(transport["argv"] + ["shell", _ADB_ENSURE_STA_AGENT],
-                                      capture_output=True, text=True, timeout=10)
-                status = proc.stdout.strip()
-                if proc.returncode == 0 and status in ("already_running", "started", "not_installed"):
-                    agent_status = {"ok": status != "not_installed", "status": status}
-                else:
-                    agent_status = {"ok": False, "status": "start_unconfirmed",
-                                    "error": proc.stderr.strip() or status or "No agent process confirmed"}
-            except (OSError, subprocess.TimeoutExpired) as error:
-                agent_status = {"ok": False, "status": "start_unconfirmed", "error": str(error)}
+        agent = self.ensure_sta_agent_over_usb("pocket4p")
+        if agent.get("serial"):
             return {
                 "usb_connected": True,
                 "auto_provisioned": False,
-                "camera_usb_info": {"connected": True, "serial_number": transport["serial"],
+                "camera_usb_info": {"connected": True, "serial_number": agent["serial"],
                                     "product_name": "OsmoPocket4P"},
-                "agent_status": agent_status,
+                "agent_status": {key: value for key, value in agent.items() if key != "serial"},
             }
 
         state = self.load_state()
@@ -833,14 +842,28 @@ class CameraInternalBridge:
                 "count": len(files), "latest": files[0] if files else None}
 
     def pull_latest_media(self, device_id: str = "pocket4p", dest_dir: Optional[str] = None,
-                          max_bytes: Optional[int] = None) -> Dict[str, Any]:
-        """Download to an atomic local cache; bounded previews never replace full files."""
+                          max_bytes: Optional[int] = None, *, filename: Optional[str] = None,
+                          prefer_smallest: bool = False) -> Dict[str, Any]:
+        """Download the newest, an exact listed filename, or the smallest nonempty MP4."""
         if max_bytes is not None and (isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0):
             return {"ok": False, "error": "max_bytes must be a positive integer"}
+        if filename is not None and prefer_smallest:
+            return {"ok": False, "error": "Choose either filename or prefer_smallest"}
         listing = self.list_remote_media(device_id)
-        if not listing.get("ok") or not listing.get("files"):
+        files = listing.get("files")
+        if not listing.get("ok") or not files:
             return {"ok": False, "error": listing.get("error", "No MP4 files found")}
-        media = listing["files"][0]
+        if filename is not None:
+            media = next((item for item in files if item["name"] == filename), None)
+            if media is None:
+                return {"ok": False, "error": "MP4 filename not found in the camera listing"}
+        elif prefer_smallest:
+            media = min((item for item in files if item["size_bytes"] > 0),
+                        key=lambda item: item["size_bytes"], default=None)
+            if media is None:
+                return {"ok": False, "error": "No nonempty MP4 files found"}
+        else:
+            media = files[0]
         partial = max_bytes is not None and max_bytes < media["size_bytes"]
         name = os.path.basename(media["name"])
         if partial:

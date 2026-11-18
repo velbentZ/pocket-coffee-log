@@ -138,6 +138,11 @@ class SessionContextCompactor:
                             )
                         )
 
+        ctx.raw_char_count = len(" ".join(accumulated_text_parts))
+        self._finalize_context_metrics(ctx)
+        return ctx
+
+    def _finalize_context_metrics(self, ctx: CanonicalBrewContext) -> None:
         # Recompute derived ratio & missing fields
         weight = ctx.canonical_parameters.get("bean_weight_g")
         yield_g = ctx.canonical_parameters.get("yield_g")
@@ -158,7 +163,7 @@ class SessionContextCompactor:
         # Build dense, zero-loss canonical summary string
         p = ctx.canonical_parameters
         summary_tokens = [
-            f"[Session={session_id}|Cam={camera_device}]",
+            f"[Session={ctx.session_id}|Cam={ctx.camera_device}]",
             f"豆={p.get('bean_name') or 'MISSING'}({p.get('bean_roast') or '-'})",
             f"粉={p.get('bean_weight_g') or 'MISSING'}g",
             f"磨={p.get('grinder_type') or 'MISSING'}:{p.get('grinder_model') or '-'}@{p.get('grind_setting') or 'MISSING'}",
@@ -176,8 +181,6 @@ class SessionContextCompactor:
             summary_tokens.append(f"待补全=[{miss}]")
 
         ctx.compacted_summary = " | ".join(summary_tokens)
-        full_raw_text = " ".join(accumulated_text_parts)
-        ctx.raw_char_count = len(full_raw_text)
         ctx.compacted_char_count = len(ctx.compacted_summary)
         if ctx.raw_char_count > 0:
             ctx.compression_ratio = round(ctx.compacted_char_count / max(1, ctx.raw_char_count), 3)
@@ -186,7 +189,41 @@ class SessionContextCompactor:
         ctx.invariants_verified = self.verify_lossless_invariants(ctx)
         canonical_json = json.dumps(ctx.canonical_parameters, sort_keys=True, ensure_ascii=False)
         ctx.checksum_sha256 = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()[:16]
-        return ctx
+
+    def merge_visual_parameters(
+        self,
+        ctx: CanonicalBrewContext,
+        visual_fields: Dict[str, Any],
+        evidence_source: str = "video_frame_ocr",
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Merges visual parameters recovered by VLM keyframe inspection ONLY for fields
+        that were missing from speech, recording provenance with `source="video_frame_ocr"`.
+        """
+        recovered: Dict[str, Dict[str, Any]] = {}
+        if not visual_fields:
+            return recovered
+        ts = datetime.now().strftime("%H:%M:%S")
+        for f_name, new_val in visual_fields.items():
+            if f_name not in self.TRACKED_FIELDS or f_name == "brew_ratio" or new_val is None:
+                continue
+            existing = ctx.canonical_parameters.get(f_name)
+            if existing is None or (isinstance(existing, str) and not existing.strip()):
+                ctx.canonical_parameters[f_name] = new_val
+                prov = asdict(
+                    ParameterProvenance(
+                        field_name=f_name,
+                        value=new_val,
+                        source="video_frame_ocr",
+                        updated_at=ts,
+                        evidence_snippet=f"VLM keyframe ({os.path.basename(str(evidence_source))}): {f_name}={new_val}"[:60],
+                    )
+                )
+                ctx.provenance_map[f_name] = prov
+                recovered[f_name] = prov
+        if recovered:
+            self._finalize_context_metrics(ctx)
+        return recovered
 
     def verify_lossless_invariants(self, ctx: CanonicalBrewContext) -> bool:
         """
@@ -224,7 +261,7 @@ class ProjectMemoryManager:
 
     def build_current_snapshot(self) -> Dict[str, Any]:
         return {
-            "schema_version": "2.0.0",
+            "schema_version": "3.0.0",
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "project_name": "pocket-coffee-log",
             "github_repo": "https://github.com/velbentZ/pocket-coffee-log",
@@ -235,31 +272,34 @@ class ProjectMemoryManager:
             "hard_invariants": [
                 "8 Required Brew Fields: bean_name, bean_weight_g, grind_setting, grinder_type (independent vs built-in), grinder_model, brew_method (Espresso vs Cold Brew), yield_g, extraction_time_s, pressure_bar.",
                 "Single-Camera Active Rotation: User rotates between Pocket 3 and Pocket 4 Pro (one active camera per brew); system automatically binds whichever camera triggers or is selected.",
-                "Camera Persistent STA Mode: USB-C initial probe/injection + DJI DUML v1 [CmdSet=0x07, CmdId=0x47] switches Pocket 3 / Pocket 4 Pro from AP (192.168.2.1) to persistent Home LAN STA mode.",
-                "On-Camera Internal Daemon: /data/local/tmp/pocket_sta_agent.sh keeps wpa_supplicant alive, disables wlan0 power_save, exposes DCIM on :8088, and webhooks /api/camera/webhook on MP4 completion.",
-                "Multimodal AI Engine: Local Whisper speech transcription + VLM keyframe inspection (Gemini / GPT-4o / Claude) for digital scale weight, grinder dial, pressure gauge bar, and shot timer.",
-                "Personal Bean Library & Subjective Taste Loop: Speaking bean shorthand ('今天用花魁') auto-fills full origin/process/roast & default grinder; post-brew subjective taste rating (偏酸/偏苦/偏淡/黄金平衡) dynamically calibrates next-brew advice.",
-                "Lossless Context Compaction: SessionContextCompactor preserves provenance + revision history for self-corrections while compressing raw transcripts.",
+                "Verified Camera STA Mode (eagle4_hg224): Live OsmoPocket4P-ANHXP5J0022DTW root ADB (2ca3:0020) writes 'load' to PCIe Wi-Fi sysfs to bring up wlan0, runs wpa_supplicant + busybox udhcpc for Home LAN STA 192.168.5.93, and pairs with DUML v1 [07:47] STA / [02:02] Shutter / [04:14] OsmoDesk Gimbal presets.",
+                "On-Camera Internal Daemon: /data/pocket-coffee/pocket_sta_agent.sh (persisted on writable /data partition; /system and /vendor are read-only ext4) keeps wpa_supplicant alive, exposes /mnt/media_rw/emulated/DCIM/DJI_001 via BusyBox httpd on :8088, sends verified source-IP heartbeats to /api/camera/heartbeat, and webhooks /api/camera/webhook on MP4 completion.",
+                "Multimodal AI & FFmpeg 4-Stage Keyframe Pipeline: Local Whisper speech transcription + FFmpeg 4-stage keyframe extraction (15% scale_dose, 35% grinder_dial, 70% pressure_crema, 90% yield_timer) + optional live Gemini/OpenAI VLM inspection recovering unspoken parameters with source='video_frame_ocr' provenance.",
+                "Beanconqueror Inventory, Label Scanner & Visualizer Loop: Speaking bean shorthand ('今天用花魁') auto-fills origin/process/roast & deducts dose weight with freshness lifecycle tracking (Degassing / Peak Window / Aging); supports AI bag label parsing and Visualizer side-by-side dual-shot comparison.",
+                "Lossless Context Compaction: SessionContextCompactor preserves provenance (voice_utterance / video_frame_ocr / mobile_supplement) + revision history for self-corrections while compressing raw transcripts.",
             ],
             "modules": {
-                "core/models.py": "Data contracts (CoffeeRecord, FlavorProfile, REQUIRED_BREW_FIELDS)",
+                "core/models.py": "Data contracts (CoffeeRecord with keyframes & media_url, FlavorProfile, REQUIRED_BREW_FIELDS)",
                 "core/registry.py": "Decoupled EventBus & ModuleRegistry for pluggable drivers/extractors/advisors/notifiers",
-                "core/context_engine.py": "Lossless SessionContextCompactor & ProjectMemoryManager",
-                "core/bean_equipment_store.py": "Personal Coffee Bean Library (shorthand auto-fill), Equipment Presets & Subjective Taste Feedback Loop",
-                "core/multimodal_vision.py": "Local Whisper audio transcription + VLM keyframe analyzer (scale, grinder dial, pressure gauge)",
-                "core/camera_sta_bridge.py": "USB-C / Serial / ADB detector, DJI DUML v1 packet builder, STA provisioner, root shell bridge",
-                "core/analyzer.py": "Multimodal voice/video parameter extractor, barista advisor, Xiaohongshu/WeChat copy generator",
-                "core/notifier.py": "WeCom, ServerChan, Bark, Feishu, and macOS notification dispatcher",
+                "core/context_engine.py": "Lossless SessionContextCompactor (with video_frame_ocr provenance) & ProjectMemoryManager (Schema 3.0.0)",
+                "core/bean_equipment_store.py": "Beanconqueror inventory deduction & freshness lifecycle, AI bag label scanner, Equipment Presets & Subjective Taste Feedback Loop",
+                "core/multimodal_vision.py": "Local Whisper audio transcription + FFmpeg 4-stage keyframe pipeline (15%/35%/70%/90%) + live Gemini/OpenAI VLM inspector",
+                "core/camera_sta_bridge.py": "Root ADB & USB-C bridge for eagle4_hg224, PCIe wlan0 STA provisioner (/data/pocket-coffee/pocket_sta_agent.sh), :8088 DCIM puller (/mnt/media_rw/emulated/DCIM/DJI_001), DUML [02:02] shutter & [04:14] OsmoDesk gimbal presets",
+                "core/analyzer.py": "Multimodal voice/video parameter extractor, barista advisor, 6-axis flavor radar, Xiaohongshu/WeChat copy generator",
+                "core/notifier.py": "WeCom, ServerChan, Bark, Feishu, and macOS notification dispatcher (default port 8788)",
                 "core/store.py": "JSON repository persistence & sample records",
-                "daemon/voice_session.py": "Wake-word & auto-stop state machine wired to SessionContextCompactor & BeanLibrary",
-                "server/app.py": "REST API & static web server (default port 8788)",
+                "daemon/voice_session.py": "Wake-word, OsmoDesk gimbal stage follower & auto-stop state machine wired to MultimodalVisionEngine, SessionContextCompactor & BeanLibrary",
+                "daemon/provision_camera_sta.py": "CLI utility for root ADB STA provisioning and /data/pocket-coffee/pocket_sta_agent.sh deployment",
+                "server/app.py": "REST API (/api/camera/sta, /api/camera/media, /api/camera/pull_media, /api/camera/gimbal, /api/media/keyframe, /api/beans/scan_label, /api/records/compare) & static web server (default port 8788)",
+                "static/index.html": "Interactive web studio with 4-stage keyframe gallery, :8088 video player, Visualizer dual-shot comparison, and 900x1200 Xiaohongshu radar+keyframe poster exporter",
             },
             "iteration_backlog": [
                 {"id": "ITER-01", "status": "done", "title": "Core modular scaffold + DUML STA bridge + Voice session pipeline"},
                 {"id": "ITER-02", "status": "done", "title": "Lossless SessionContextCompactor & ProjectMemoryManager"},
                 {"id": "ITER-03", "status": "done", "title": "Personal Coffee Bean Library, Equipment Presets & Subjective Taste Calibration Loop"},
                 {"id": "ITER-04", "status": "done", "title": "Local Whisper + VLM Keyframe Analyzer & USB-C Hardware Probe"},
-                {"id": "ITER-05", "status": "ready", "title": "Live USB-C injection on physical Pocket 3 / Pocket 4 Pro once plugged in + Home Wi-Fi SSID/Password"},
+                {"id": "ITER-05", "status": "done", "title": "Live OsmoPocket4P-ANHXP5J0022DTW eagle4_hg224 root ADB + PCIe wlan0 load + wpa_supplicant STA 192.168.5.93 + /data/pocket-coffee/pocket_sta_agent.sh + :8088 HTTP media server (/mnt/media_rw/emulated/DCIM/DJI_001) & live heartbeats"},
+                {"id": "ITER-06", "status": "done", "title": "Beanconqueror inventory deduction & freshness lifecycle, AI bag label scanner, Visualizer dual-shot comparison, OsmoDesk 04:14 gimbal presets, and FFmpeg 4-stage keyframe pipeline"},
             ],
         }
 

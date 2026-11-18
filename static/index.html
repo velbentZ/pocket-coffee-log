@@ -1174,12 +1174,79 @@
 
     .keyframe-card img {
       width: 100%;
+      height: auto;
       border-radius: 6px;
       margin-top: 6px;
       display: block;
       aspect-ratio: 16 / 9;
       object-fit: cover;
       background: #0b0908;
+    }
+
+    .report-keyframe-box {
+      background: rgba(18, 14, 12, 0.62);
+      border: 1px solid rgba(212, 163, 115, 0.28);
+      border-radius: 16px;
+      padding: 18px 20px;
+      margin-bottom: 22px;
+    }
+
+    .report-keyframe-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .report-keyframe-head h4 {
+      font-size: 14.5px;
+      color: var(--crema-bright);
+    }
+
+    .report-keyframe-placeholder {
+      margin-top: 6px;
+      padding: 16px 10px;
+      border-radius: 8px;
+      background: linear-gradient(145deg, #130e0c 0%, #1d1511 100%);
+      border: 1px dashed rgba(212, 163, 115, 0.28);
+      color: var(--text-muted);
+      font-size: 11.5px;
+      line-height: 1.45;
+      min-height: 92px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }
+
+    .kf-detected-badge {
+      display: inline-block;
+      margin-top: 6px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      background: rgba(82, 183, 136, 0.16);
+      border: 1px solid rgba(82, 183, 136, 0.36);
+      color: #74c69d;
+    }
+
+    .report-video-drawer {
+      margin-bottom: 20px;
+      background: #120e0c;
+      border: 1px solid rgba(82, 183, 136, 0.42);
+      border-radius: 14px;
+      padding: 14px 16px;
+    }
+
+    .report-video-drawer video {
+      width: 100%;
+      max-height: 360px;
+      border-radius: 10px;
+      background: #000;
+      margin-top: 10px;
     }
 
     .toast {
@@ -1601,6 +1668,34 @@
         container.innerHTML = '<div class="report-card">暂无记录</div>';
         return;
       }
+      renderMainReport(rec);
+    }
+
+    function toggleReportVideoPlayer(recordId, mediaUrl) {
+      const drawer = document.getElementById(`reportVideoDrawer_${recordId}`);
+      if (!drawer || !mediaUrl) return;
+      if (drawer.innerHTML.trim()) {
+        drawer.innerHTML = '';
+        return;
+      }
+      const safeUrl = escapeHtml(mediaUrl);
+      drawer.innerHTML = `
+        <div class="report-video-drawer">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <strong style="font-size:13px; color:#74c69d;">🎬 相机内部 :8088 原始视频回放 (${safeUrl})</strong>
+            <div style="display:flex; gap:8px;">
+              <a class="btn" style="padding:5px 10px; font-size:12px; text-decoration:none;" href="${safeUrl}" target="_blank" rel="noopener">🔗 在新窗口打开 / 下载原片</a>
+              <button class="btn" type="button" style="padding:5px 10px; font-size:12px;" onclick="toggleReportVideoPlayer('${escapeHtml(recordId)}', '${safeUrl}')">✖ 收起播放器</button>
+            </div>
+          </div>
+          <video controls autoplay preload="metadata" src="${safeUrl}"></video>
+        </div>
+      `;
+    }
+
+    function renderMainReport(rec) {
+      const container = document.getElementById('reportDetailArea');
+      if (!container || !rec) return;
 
       const missingSet = new Set((rec.missing_fields || []).map(m => m.field));
       const isColdBrew = (rec.brew_method || '').includes('冷萃');
@@ -1640,6 +1735,64 @@
         </div>
       `).join('');
 
+      const playVideoBtnHtml = rec.media_url
+        ? `<div style="margin-top:8px;"><button class="btn btn-primary" type="button" style="padding:6px 12px; font-size:12px;" data-media-url="${escapeHtml(rec.media_url)}" onclick="toggleReportVideoPlayer('${escapeHtml(rec.id)}', this.dataset.mediaUrl)">🎬 播放本杯相机原始视频</button></div>`
+        : '';
+
+      let keyframeGalleryHtml = '';
+      if (rec.keyframes && rec.keyframes.length > 0) {
+        const presetBadgeMap = {
+          scale_dose: 'P1 称豆',
+          grinder_dial: 'P2 刻度',
+          espresso_gauge: 'P3 压力表',
+          final_cup: 'P4 出杯',
+          reset_center: 'P0 回中'
+        };
+        const fallbackPresets = ['P1 称豆', 'P2 刻度', 'P3 压力表', 'P4 出杯'];
+        const fallbackPcts = [15, 35, 70, 90];
+        const extractedTotal = rec.keyframes.filter(kf => kf && kf.extracted && kf.image_path).length;
+
+        const kfCards = rec.keyframes.map((kf, idx) => {
+          const pct = kf.percentage || fallbackPcts[idx] || 0;
+          const ts = kf.timestamp_s ?? '--';
+          const presetTag = presetBadgeMap[kf.gimbal_preset] || fallbackPresets[idx] || '关键帧';
+          const stageTitle = kf.frame_stage || kf.stage || presetTag;
+          const detectedObj = kf.detected_fields || {};
+          const detectedEntries = Object.entries(detectedObj).filter(([, v]) => v !== null && v !== undefined && v !== '');
+          const detectedHtml = detectedEntries.length > 0
+            ? `<div class="kf-detected-badge">🔍 VLM: ${escapeHtml(detectedEntries.map(([k, v]) => `${k}=${v}`).join(', '))}</div>`
+            : '';
+
+          const visualBody = (kf.extracted && kf.image_path)
+            ? `<img class="report-keyframe-img" data-record-id="${escapeHtml(rec.id)}" data-stage-label="${escapeHtml(presetTag)} (${pct}%)" src="/api/media/keyframe?path=${encodeURIComponent(kf.image_path)}" alt="${escapeHtml(stageTitle)}" width="640" height="360" loading="lazy" crossorigin="anonymous" />`
+            : `<div class="report-keyframe-placeholder"><strong style="color:var(--crema);">⏱️ 画面锚点 t=${escapeHtml(ts)}s</strong><span>${escapeHtml(kf.visual_description || stageTitle)}</span></div>`;
+
+          return `
+            <div class="keyframe-card">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:4px;">
+                <span class="badge badge-ok" style="padding:2px 7px;">${escapeHtml(presetTag)}</span>
+                <span style="color:var(--crema-bright); font-weight:700; font-family:monospace;">${escapeHtml(pct)}% · t=${escapeHtml(ts)}s</span>
+              </div>
+              <div style="color:var(--latte); font-weight:600; margin-top:5px;">${escapeHtml(stageTitle)}</div>
+              ${visualBody}
+              ${detectedHtml}
+            </div>
+          `;
+        }).join('');
+
+        keyframeGalleryHtml = `
+          <div class="report-keyframe-box">
+            <div class="report-keyframe-head">
+              <h4>🖼️ 相机 4 阶段视觉抽帧画廊 (P1 称豆 / P2 刻度 / P3 压力表 / P4 出杯)</h4>
+              <span class="badge ${extractedTotal > 0 ? 'badge-ok' : 'badge-warn'}">
+                ${extractedTotal > 0 ? `✓ 已落盘 ${extractedTotal}/4 张实拍关键帧缩略图` : '📹 4 阶段多模态时间戳锚点已关联'}
+              </span>
+            </div>
+            <div class="keyframe-grid">${kfCards}</div>
+          </div>
+        `;
+      }
+
       container.innerHTML = `
         ${missingBannerHtml}
 
@@ -1654,9 +1807,12 @@
               <span class="badge ${rec.status === 'complete' ? 'badge-ok' : 'badge-warn'}" style="font-size:13px; padding:6px 12px;">
                 ${rec.status === 'complete' ? '✓ 参数完整 · AI 复盘已生成' : '⚠️ 待补充缺失参数'}
               </span>
-              <div style="font-size:11.5px; color:var(--text-muted); margin-top:6px;">视频源: <code>${rec.video_path || 'LAN Stream'}</code></div>
+              <div style="font-size:11.5px; color:var(--text-muted); margin-top:6px;">视频源: <code>${escapeHtml(rec.video_path || 'LAN Stream')}</code></div>
+              ${playVideoBtnHtml}
             </div>
           </div>
+
+          <div id="reportVideoDrawer_${escapeHtml(rec.id)}"></div>
 
           <!-- 8 Core Metrics Requested by User -->
           <div class="metrics-grid">
@@ -1709,6 +1865,8 @@
               </div>
             </div>
           </div>
+
+          ${keyframeGalleryHtml}
 
           <!-- Radar Chart + AI Barista Diagnosis & Next-Brew Suggestions -->
           <div class="analysis-row">
@@ -2630,6 +2788,36 @@
       recognition.start();
     }
 
+    function drawRoundedRectPath(ctx, x, y, w, h, r) {
+      const radius = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + w - radius, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+      ctx.lineTo(x + w, y + h - radius);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      ctx.lineTo(x + radius, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+    }
+
+    function drawCoverImage(ctx, img, x, y, w, h, r = 10) {
+      ctx.save();
+      drawRoundedRectPath(ctx, x, y, w, h, r);
+      ctx.clip();
+      const iw = img.naturalWidth || img.width || w;
+      const ih = img.naturalHeight || img.height || h;
+      const scale = Math.max(w / iw, h / ih);
+      const sw = w / scale;
+      const sh = h / scale;
+      const sx = (iw - sw) / 2;
+      const sy = (ih - sh) / 2;
+      ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+      ctx.restore();
+    }
+
     function exportPosterImage(recordId) {
       const rec = appState.records.find(r => r.id === recordId) || appState.records[0];
       if (!rec) return;
@@ -2638,88 +2826,297 @@
       canvas.height = 1200;
       const ctx = canvas.getContext('2d');
 
-      // Espresso background gradient
+      // 1. Magazine-grade Espresso background gradient + double frame
       const grad = ctx.createLinearGradient(0, 0, 900, 1200);
       grad.addColorStop(0, '#2d1e17');
-      grad.addColorStop(0.55, '#16100c');
+      grad.addColorStop(0.5, '#150f0c');
       grad.addColorStop(1, '#261912');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, 900, 1200);
 
-      // Border
       ctx.strokeStyle = '#d4a373';
-      ctx.lineWidth = 4;
-      ctx.strokeRect(36, 36, 828, 1128);
+      ctx.lineWidth = 3.5;
+      ctx.strokeRect(30, 30, 840, 1140);
+      ctx.strokeStyle = 'rgba(243, 198, 143, 0.22)';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(40, 40, 820, 1120);
 
+      // 2. Header badge + Bean Title + Flavor Notes
+      drawRoundedRectPath(ctx, 68, 62, 410, 36, 18);
       ctx.fillStyle = '#f3c68f';
-      ctx.font = 'bold 24px -apple-system, PingFang SC, sans-serif';
-      ctx.fillText('☕️ POCKET COFFEE STUDIO · 每日咖啡萃取报告', 75, 105);
+      ctx.fill();
+      ctx.fillStyle = '#1a120e';
+      ctx.font = 'bold 18px -apple-system, PingFang SC, sans-serif';
+      ctx.fillText('☕️ POCKET COFFEE STUDIO · 每日咖啡打卡', 86, 86);
+
+      ctx.fillStyle = '#a8988e';
+      ctx.font = '18px -apple-system, PingFang SC, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`🎥 ${rec.camera_device}`, 832, 86);
+      ctx.textAlign = 'left';
 
       ctx.fillStyle = '#faedcd';
-      ctx.font = 'bold 46px -apple-system, PingFang SC, sans-serif';
-      ctx.fillText((rec.bean_name || '今日精选咖啡豆').slice(0, 16), 75, 180);
+      ctx.font = 'bold 42px -apple-system, PingFang SC, sans-serif';
+      ctx.fillText((rec.bean_name || '今日精选咖啡豆').slice(0, 18), 68, 150);
+
+      const isColdBrew = (rec.brew_method || '').includes('冷萃');
+      const timeDisp = rec.extraction_time_s
+        ? (isColdBrew && rec.extraction_time_s >= 3600 ? `${(rec.extraction_time_s / 3600).toFixed(1)} h` : `${rec.extraction_time_s} s`)
+        : '-- s';
 
       ctx.fillStyle = '#d4a373';
-      ctx.font = '26px -apple-system, PingFang SC, sans-serif';
-      ctx.fillText(`${rec.brew_method || '意式浓缩'}  |  🎥 ${rec.camera_device} 全自动记录`, 75, 230);
+      ctx.font = '23px -apple-system, PingFang SC, sans-serif';
+      ctx.fillText(
+        `${rec.brew_method || '意式浓缩'}  |  ${rec.bean_roast || '精品烘焙'}  |  ✨ ${(rec.flavor_notes || []).slice(0, 4).join(' · ') || '花果平衡'}`,
+        68,
+        192
+      );
 
-      // Metrics cards
+      // 3. Core 6 Metrics Cards (2 cols x 3 rows)
       const items = [
-        ['咖啡豆称重', `${rec.bean_weight_g || '--'} g`],
-        ['萃取液重 / 粉液比', `${rec.yield_g || '--'} g (${rec.brew_ratio || '--'})`],
-        ['研磨机器', `${rec.grinder_type || '--'}`],
-        ['磨豆机 & 刻度', `${rec.grinder_model || ''} · ${rec.grind_setting || '--'}`],
-        ['萃取耗时', `${rec.extraction_time_s || '--'} s`],
-        ['萃取压力', `${rec.pressure_bar || '--'} bar`],
+        ['咖啡豆称重 (Dose)', `${rec.bean_weight_g || '--'} g`],
+        ['出液量 / 粉液比', `${rec.yield_g || '--'} ${isColdBrew ? 'ml' : 'g'} (${rec.brew_ratio || '--'})`],
+        ['研磨设备类型', `${rec.grinder_type || '--'}`],
+        ['磨豆机 & 刻度', `${(rec.grinder_model || '').slice(0, 10)} · ${rec.grind_setting || '--'}`],
+        ['萃取时间 (Time)', timeDisp],
+        ['萃取压力 (Pressure)', `${rec.pressure_bar ?? '--'} bar`],
       ];
 
       items.forEach((it, idx) => {
         const col = idx % 2;
         const row = Math.floor(idx / 2);
-        const x = 75 + col * 385;
-        const y = 280 + row * 145;
-        ctx.fillStyle = 'rgba(0,0,0,0.42)';
-        ctx.fillRect(x, y, 360, 120);
-        ctx.strokeStyle = 'rgba(212,163,115,0.35)';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(x, y, 360, 120);
+        const x = 68 + col * 392;
+        const y = 216 + row * 98;
+        drawRoundedRectPath(ctx, x, y, 372, 84, 12);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(212, 163, 115, 0.32)';
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
 
         ctx.fillStyle = '#a8988e';
-        ctx.font = '22px -apple-system, PingFang SC, sans-serif';
-        ctx.fillText(it[0], x + 24, y + 44);
+        ctx.font = '18px -apple-system, PingFang SC, sans-serif';
+        ctx.fillText(it[0], x + 20, y + 32);
 
         ctx.fillStyle = '#f3c68f';
-        ctx.font = 'bold 30px -apple-system, PingFang SC, sans-serif';
-        ctx.fillText(String(it[1]).slice(0, 18), x + 24, y + 92);
+        ctx.font = 'bold 25px -apple-system, PingFang SC, sans-serif';
+        ctx.fillText(String(it[1]).slice(0, 21), x + 20, y + 67);
       });
 
-      // Flavor tags
-      ctx.fillStyle = '#faedcd';
-      ctx.font = 'bold 26px -apple-system, PingFang SC, sans-serif';
-      ctx.fillText('✨ 风味品鉴: ' + (rec.flavor_notes || []).join(' · '), 75, 775);
+      // 4. Middle Visual Studio Row: Left = 6-Axis Sensory Radar Polygon, Right = Keyframe Snapshots or Barista Signature Badge
+      const midY = 524;
+      const midH = 336;
 
-      // Barista diagnosis & suggestions
-      ctx.fillStyle = '#d4a373';
-      ctx.font = 'bold 26px -apple-system, PingFang SC, sans-serif';
-      ctx.fillText('💡 AI 咖啡师复盘建议:', 75, 845);
+      // Left Panel: 6-Axis Sensory Flavor Radar Chart
+      drawRoundedRectPath(ctx, 68, midY, 372, midH, 16);
+      ctx.fillStyle = 'rgba(14, 10, 8, 0.62)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(212, 163, 115, 0.34)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
 
-      ctx.fillStyle = '#f5ebe6';
-      ctx.font = '23px -apple-system, PingFang SC, sans-serif';
-      const diag = (rec.extraction_diagnosis || '') + ' ' + ((rec.suggestions && rec.suggestions[0]) || '');
-      for (let i = 0; i < 4; i++) {
-        const line = diag.slice(i * 31, (i + 1) * 31);
-        if (line) ctx.fillText(line, 75, 895 + i * 42);
+      ctx.fillStyle = '#f3c68f';
+      ctx.font = 'bold 20px -apple-system, PingFang SC, sans-serif';
+      ctx.fillText('📊 感官风味六维雷达', 90, midY + 34);
+
+      const fp = rec.flavor_profile || {};
+      const radarAxes = [
+        { k: 'acidity', label: '酸质' },
+        { k: 'sweetness', label: '甜感' },
+        { k: 'body', label: '醇厚' },
+        { k: 'aroma', label: '香气' },
+        { k: 'aftertaste', label: '余韵' },
+        { k: 'balance', label: '平衡' },
+      ];
+      const rCx = 254;
+      const rCy = midY + 194;
+      const maxR = 92;
+      const angleStep = (Math.PI * 2) / radarAxes.length;
+
+      // Concentric radar grid polygons
+      [0.35, 0.68, 1.0].forEach(level => {
+        ctx.beginPath();
+        radarAxes.forEach((_, i) => {
+          const a = -Math.PI / 2 + i * angleStep;
+          const px = rCx + Math.cos(a) * maxR * level;
+          const py = rCy + Math.sin(a) * maxR * level;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.closePath();
+        ctx.strokeStyle = 'rgba(212, 163, 115, 0.22)';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      });
+
+      // Radial spokes
+      radarAxes.forEach((_, i) => {
+        const a = -Math.PI / 2 + i * angleStep;
+        ctx.beginPath();
+        ctx.moveTo(rCx, rCy);
+        ctx.lineTo(rCx + Math.cos(a) * maxR, rCy + Math.sin(a) * maxR);
+        ctx.strokeStyle = 'rgba(212, 163, 115, 0.16)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      });
+
+      // Sensory Flavor Data Polygon
+      const dataVertices = radarAxes.map((ax, i) => {
+        const rawScore = Number(fp[ax.k] ?? 7.8);
+        const norm = Math.min(10, Math.max(1, rawScore)) / 10.0;
+        const a = -Math.PI / 2 + i * angleStep;
+        return {
+          x: rCx + Math.cos(a) * maxR * norm,
+          y: rCy + Math.sin(a) * maxR * norm,
+          lx: rCx + Math.cos(a) * (maxR + 30),
+          ly: rCy + Math.sin(a) * (maxR + 24),
+          label: ax.label,
+          score: rawScore.toFixed(1),
+        };
+      });
+
+      ctx.beginPath();
+      dataVertices.forEach((pt, i) => {
+        if (i === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(212, 163, 115, 0.36)';
+      ctx.fill();
+      ctx.strokeStyle = '#f3c68f';
+      ctx.lineWidth = 2.8;
+      ctx.stroke();
+
+      dataVertices.forEach(pt => {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 4.2, 0, Math.PI * 2);
+        ctx.fillStyle = '#faedcd';
+        ctx.fill();
+
+        ctx.fillStyle = '#faedcd';
+        ctx.font = 'bold 15px -apple-system, PingFang SC, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${pt.label} ${pt.score}`, pt.lx, pt.ly);
+      });
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+
+      // Right Panel: Composite up to 2 loaded keyframe snapshots from DOM (or Barista Signature Badge)
+      drawRoundedRectPath(ctx, 460, midY, 372, midH, 16);
+      ctx.fillStyle = 'rgba(14, 10, 8, 0.62)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(212, 163, 115, 0.34)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      const loadedKfImgs = Array.from(document.querySelectorAll('.report-keyframe-img'))
+        .filter(img => (!img.dataset.recordId || img.dataset.recordId === rec.id) && img.complete && img.naturalWidth > 0)
+        .slice(0, 2);
+
+      let compositedCount = 0;
+      if (loadedKfImgs.length > 0) {
+        ctx.fillStyle = '#f3c68f';
+        ctx.font = 'bold 20px -apple-system, PingFang SC, sans-serif';
+        ctx.fillText('🖼️ 相机实拍关键帧快照', 482, midY + 34);
+
+        loadedKfImgs.forEach((imgEl, idx) => {
+          const slotH = loadedKfImgs.length === 1 ? 262 : 126;
+          const slotY = midY + 50 + idx * (slotH + 14);
+          try {
+            drawCoverImage(ctx, imgEl, 480, slotY, 332, slotH, 10);
+            ctx.strokeStyle = 'rgba(243, 198, 143, 0.45)';
+            ctx.lineWidth = 1.5;
+            drawRoundedRectPath(ctx, 480, slotY, 332, slotH, 10);
+            ctx.stroke();
+
+            const stageTag = imgEl.dataset.stageLabel || `关键帧 #${idx + 1}`;
+            drawRoundedRectPath(ctx, 490, slotY + slotH - 34, 150, 26, 6);
+            ctx.fillStyle = 'rgba(18, 14, 12, 0.82)';
+            ctx.fill();
+            ctx.fillStyle = '#f3c68f';
+            ctx.font = 'bold 14px -apple-system, PingFang SC, sans-serif';
+            ctx.fillText(`📷 ${stageTag}`, 500, slotY + slotH - 16);
+            compositedCount += 1;
+          } catch (drawErr) {
+            // Ignore cross-origin draw errors if any
+          }
+        });
       }
 
+      if (compositedCount === 0) {
+        const avgScore = (
+          radarAxes.reduce((acc, ax) => acc + Number(fp[ax.k] ?? 7.8), 0) / radarAxes.length
+        ).toFixed(1);
+
+        ctx.fillStyle = '#f3c68f';
+        ctx.font = 'bold 20px -apple-system, PingFang SC, sans-serif';
+        ctx.fillText('🏆 BARISTA SIGNATURE · 认证印章', 482, midY + 36);
+
+        drawRoundedRectPath(ctx, 482, midY + 56, 328, 118, 14);
+        ctx.fillStyle = 'rgba(212, 163, 115, 0.12)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(243, 198, 143, 0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.fillStyle = '#faedcd';
+        ctx.font = 'bold 48px -apple-system, PingFang SC, sans-serif';
+        ctx.fillText(`${avgScore}`, 504, midY + 126);
+        ctx.fillStyle = '#d4a373';
+        ctx.font = 'bold 20px -apple-system, PingFang SC, sans-serif';
+        ctx.fillText('/ 10.0 感官综合均分', 606, midY + 112);
+        ctx.fillStyle = '#74c69d';
+        ctx.font = '17px -apple-system, PingFang SC, sans-serif';
+        ctx.fillText(rec.status === 'complete' ? '✓ 黄金萃取参数核验通过' : '✦ 多模态 AI 实时复盘', 606, midY + 144);
+
+        const stageBadges = [
+          'P1 15% 电子秤称豆精准识别',
+          'P2 35% 磨豆机刀盘刻度定位',
+          'P3 70% 9bar 压力表与虎斑油脂',
+          'P4 90% 出杯液重与读秒终点',
+        ];
+        stageBadges.forEach((txt, i) => {
+          ctx.fillStyle = '#e2d5ce';
+          ctx.font = '17px -apple-system, PingFang SC, sans-serif';
+          ctx.fillText(`✦ ${txt}`, 488, midY + 210 + i * 32);
+        });
+      }
+
+      // 5. AI Barista Diagnosis & Next-Brew Suggestion Card
+      drawRoundedRectPath(ctx, 68, 878, 764, 212, 16);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.38)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(212, 163, 115, 0.28)';
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+
+      ctx.fillStyle = '#f3c68f';
+      ctx.font = 'bold 23px -apple-system, PingFang SC, sans-serif';
+      ctx.fillText('💡 AI 咖啡师萃取复盘与建议:', 92, 916);
+
+      ctx.fillStyle = '#f5ebe6';
+      ctx.font = '21px -apple-system, PingFang SC, sans-serif';
+      const diag = ((rec.extraction_diagnosis || '') + ' ' + ((rec.suggestions && rec.suggestions[0]) || '')).trim();
+      for (let i = 0; i < 4; i++) {
+        const line = diag.slice(i * 33, (i + 1) * 33);
+        if (line) ctx.fillText(line, 92, 956 + i * 34);
+      }
+
+      // 6. Footer Signature
       ctx.fillStyle = '#a8988e';
-      ctx.font = '20px -apple-system, PingFang SC, sans-serif';
-      ctx.fillText(`记录编号: ${rec.id}   |   时间: ${rec.created_at}`, 75, 1115);
+      ctx.font = '18px -apple-system, PingFang SC, sans-serif';
+      ctx.fillText(`记录编号: ${rec.id}   |   时间: ${rec.created_at}`, 68, 1130);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#d4a373';
+      ctx.fillText('Pocket Coffee Studio · LAN STA :8088', 832, 1130);
+      ctx.textAlign = 'left';
 
       const link = document.createElement('a');
       link.download = `${rec.id}-xiaohongshu-poster.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
-      showToast('🖼️ 已导出小红书/微信 3:4 高清分享海报 (.png)！');
+      showToast('🖼️ 已导出含六维风味雷达的小红书/微信 3:4 高清分享海报 (.png)！');
     }
 
     fetchState();

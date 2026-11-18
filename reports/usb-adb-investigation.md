@@ -952,3 +952,93 @@ in unit tests. No live gimbal or recording command was sent.
 Validation: `python3 -m unittest tests/test_camera_sta_bridge.py -v` passed
 all 17 tests. The checked-in and embedded scripts match, and
 `git diff --check` passed. No git commit was created.
+
+## 2026-11-18 USB recovery CLI and full Wi-Fi MP4 verification
+
+macOS IOKit identified `OsmoPocket4P-ANHXP5J0022DTW` with USB ADB serial
+`123456789ABCDEF`; `adb devices -l` identified `eagle4_hg224`. One initial
+`make provision` invocation failed because it found no live USB transport.
+Enumeration subsequently showed the same camera as `device`, with transport ID
+6 (previously 5). The cause of the transient disconnect was not established.
+No ADB daemon restart, TCP ADB enablement, or USB configuration change was
+issued during this run.
+
+On retry, `make provision` started the existing
+`/data/pocket-coffee/pocket_sta_agent.sh`. A subsequent
+`python3 daemon/provision_camera_sta.py --device pocket4p --status --pull-latest`
+reported `already_running`, a fresh STA heartbeat from `192.168.5.93` at
+`2026-11-18T12:03:34.919088+08:00`, and the latest MP4 URL. A separate GET to
+`http://127.0.0.1:8788/api/camera/sta` confirmed the verified heartbeat source
+at `2026-11-18T12:03:51.403902+08:00`. The camera showed `wlan0` up at
+`192.168.5.93/24`, agent PID `23670`, and BusyBox httpd PID `23680` listening
+on port `8088` with document root `/mnt/media_rw/emulated/DCIM`. USB ADB still
+enumerated as `device` after the download.
+
+The default CLI uses the installed Wi-Fi profile and only reports success after
+receiving a new verified heartbeat at the configured `verified_sta_ip` or
+`lan_ip`. An explicit `--legacy-duml` request can use the SSID, password and
+server IP from `sta_network` or their CLI overrides; that path was tested with
+mocks and did not run on the camera. `--no-recover-adb` checks the running
+agent without starting it. Boot persistence was not tested.
+
+The camera returned no HTTP directory index, so `list_remote_media` enumerated
+18 MP4s via USB ADB. Both the CLI's full newest-file download and
+`pull_latest_media(prefer_smallest=True)` selected `DJI_20260813111516_0034_D.MP4`.
+The full GET ran over Wi-Fi from
+`http://192.168.5.93:8088/DJI_001/DJI_20260813111516_0034_D.MP4`.
+HTTP HEAD and the bridge both reported **3,181,520 bytes**. The cached
+`data/media_cache/DJI_20260813111516_0034_D.MP4` and DCIM original had matching
+SHA-256 values:
+`d7b86c93c25bf67f64bcdcf8715eafddd78fe2dffc62642505da3df60f0c2b7f`.
+
+FFprobe 9.0.2 identified the smallest clip as HEVC Main 10, 3840×2160,
+30000/1001 fps, and 0.300300 seconds. FFmpeg decoded the video without errors.
+The extractor produced three frames for this clip: its final frame has PTS
+0.266933 s, before the rounded 90% seek at 0.27 s.
+
+For the four-stage check, `pull_latest_media(filename="DJI_20260725141425_0022_D.MP4")`
+downloaded the exact listed file from
+`http://192.168.5.93:8088/DJI_001/DJI_20260725141425_0022_D.MP4` to
+`data/media_cache/`, with `partial: false` at **9,314,369 bytes**. The cached
+file and DCIM original both hashed to
+`9e7684064b0aa1c54ec224c1852373c121c8857c7e457640e822c0bc2f01c3d6`.
+FFprobe reported HEVC Main 10, 1920×1080, 24000/1001 fps, and 2.836167 s.
+`ffmpeg -nostdin -v error -xerror -i <clip> -map 0:v:0 -f null -` decoded
+the entire video stream successfully.
+
+The project's `extract_video_metadata_and_frames` helper ran against that
+local file with [FFmpeg and FFprobe 9.0.2](https://www.osxexperts.net/) and
+produced four distinct 640×360 JPEGs in `data/keyframes/live_pocket4p_verify/`.
+Each file had valid JPEG start and end markers, was identified as `mjpeg` by
+FFprobe, and had a distinct SHA-256. The timestamps are the requested seeks;
+the stage names identify the sampling plan, not verified scene contents.
+
+| Stage | Seek | Output | Bytes |
+| --- | ---: | --- | ---: |
+| 15% | 0.43 s | `frame_15pct_scale_dose.jpg` | 62,817 |
+| 35% | 0.99 s | `frame_35pct_grinder_dial.jpg` | 61,705 |
+| 70% | 1.99 s | `frame_70pct_pressure_crema.jpg` | 52,703 |
+| 90% | 2.55 s | `frame_90pct_yield_timer.jpg` | 41,132 |
+
+Validation: `python3 -m unittest tests/test_camera_sta_bridge.py -v` passed
+all 23 tests. The two MP4s and four JPEGs are local verification artifacts.
+No recording command was sent, and no git commit was created.
+
+### Live API verification after restart
+
+On 2026-11-18 at 12:20 CST, both `127.0.0.1:8788` and `192.168.5.84:8788`
+served context schema `3.0.0`. The server received a new verified heartbeat
+from the Pocket 4 Pro at `192.168.5.93`, advancing from 12:20:06 to 12:20:11
+without reprovisioning.
+
+`POST /api/camera/pull_media` with
+`{"device_id":"pocket4p","filename":"DJI_20260725141425_0022_D.MP4"}` pulled
+the exact file from the camera over Wi-Fi. The downloaded file matched the
+9,314,369-byte size and SHA-256 above. The response marked all four frames
+extracted; `GET /api/media/keyframe?path=...` returned four distinct
+`image/jpeg` bodies with HTTP 200 from both server addresses. The frame
+sizes and seek times matched the table above. No brew record was created.
+
+The pulled MP4 and generated JPEGs are local caches under `data/media_cache/`
+and `data/keyframes/`. The verification details are tracked here; the media
+files are ignored by Git.
