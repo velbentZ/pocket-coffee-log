@@ -25,11 +25,11 @@
       "recording_state": "unknown",
       "battery_percent": null,
       "sd_free_gb": 100.46,
-      "last_heartbeat": "2026-11-18T12:21:07.102536+08:00",
+      "last_heartbeat": "2026-11-18T13:02:31.478455+08:00",
       "capabilities": [],
       "adb_serial": "123456789ABCDEF",
       "verification": {
-        "checked_at": "2026-11-18T12:21:07.102536+08:00",
+        "checked_at": "2026-11-18T13:02:31.478455+08:00",
         "status": "live_sta_heartbeat",
         "usb_product": "OsmoPocket4P-ANHXP5J0022DTW",
         "adb_serial": "123456789ABCDEF",
@@ -156,5 +156,12 @@
       "output": "PID 3819 running | httpd :8088 active | power_save=off | DCIM watcher ready",
       "verification_status": "legacy_unverified"
     }
-  ]
+  ],
+  "auto_recovery": {
+    "ble_name": "OsmoPocket4P-4FB5",
+    "lan_ip": "192.168.5.93",
+    "lan_macs": [
+      "88:22:33:77:33:99"
+    ]
+  }
 }
