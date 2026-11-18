@@ -187,6 +187,10 @@ agent_running() {
 if [ ! -f "$agent" ]; then echo not_installed; exit 0; fi
 if agent_running; then echo already_running; exit 0; fi
 if [ "${check_only:-0}" = 1 ]; then echo not_running; exit 0; fi
+# Android init kills the adbd cpuacct group when USB disconnects.
+echo $$ 2>/dev/null > /acct/cgroup.procs || true
+echo $$ 2>/dev/null > /dev/cpuctl/cgroup.procs || true
+echo $$ 2>/dev/null > /dev/cg2_bpf/cgroup.procs || true
 /sbin/busybox setsid sh "$agent" </dev/null >/dev/null 2>&1 &
 for attempt in 1 2 3; do
     sleep 1
@@ -198,6 +202,10 @@ exit 1
 
 ON_CAMERA_AGENT_SCRIPT = r"""#!/system/bin/sh
 # Verified on eagle4_hg224. Install in /data/pocket-coffee; firmware is read-only.
+# Android init kills the adbd cpuacct group when USB disconnects.
+echo $$ 2>/dev/null > /acct/cgroup.procs || true
+echo $$ 2>/dev/null > /dev/cpuctl/cgroup.procs || true
+echo $$ 2>/dev/null > /dev/cg2_bpf/cgroup.procs || true
 trap '' HUP
 BASE_DIR="${BASE_DIR:-/data/pocket-coffee}"
 [ -r "$BASE_DIR/agent.env" ] && . "$BASE_DIR/agent.env"
@@ -251,17 +259,35 @@ ensure_sta() {
     fi
     ip link set wlan0 up || return 1
     CURRENT_IP=$(ip -4 addr show wlan0 | "$BB" awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}')
-    # An existing lease on the server subnet is enough; do not disturb firmware Wi-Fi.
-    case "$CURRENT_IP" in "${STA_PREFIX:-${SERVER_IP%.*}.}"*) WPA_FAILS=0; return 0;; esac
+    # An IPv4 lease can outlive the association and even the supplicant.
+    LINK=$(ip link show wlan0)
+    LINK_READY=0
+    case "$LINK " in
+        *NO-CARRIER*|*" state DOWN "*) ;;
+        *LOWER_UP*) LINK_READY=1;;
+    esac
     WPA_DIR=""
+    WPA_COMPLETED=0
+    WPA_SOCKET=0
     for SOCKET_DIR in /tmp/wpa_supplicant /data/misc/wifi/sockets "$CTRL_DIR"; do
+        [ ! -S "$SOCKET_DIR/wlan0" ] || WPA_SOCKET=1
         STATUS=$("$BB" timeout -t 2 wpa_cli -p "$SOCKET_DIR" -i wlan0 status 2>/dev/null)
         case "$STATUS" in
-            *wpa_state=COMPLETED*) WPA_DIR="$SOCKET_DIR"; break;;
+            *wpa_state=COMPLETED*) WPA_DIR="$SOCKET_DIR"; WPA_COMPLETED=1; break;;
             *wpa_state=*) [ -n "$WPA_DIR" ] || WPA_DIR="$SOCKET_DIR";;
         esac
     done
-    if ! printf '%s' "$STATUS" | "$BB" grep -q 'wpa_state=COMPLETED'; then
+    if [ "$LINK_READY" -eq 1 ]; then
+        if [ "$WPA_COMPLETED" -eq 1 ]; then
+            case "$CURRENT_IP" in "${STA_PREFIX:-${SERVER_IP%.*}.}"*) WPA_FAILS=0; return 0;; esac
+        elif [ -z "$WPA_DIR" ] && [ "$WPA_SOCKET" -eq 0 ]; then
+            case "$LINK " in
+                *" state UP "*)
+                    case "$CURRENT_IP" in "${STA_PREFIX:-${SERVER_IP%.*}.}"*) WPA_FAILS=0; return 0;; esac;;
+            esac
+        fi
+    fi
+    if [ "$WPA_COMPLETED" -ne 1 ] || [ "$LINK_READY" -ne 1 ]; then
         if [ -n "$WPA_DIR" ]; then
             NETWORKS=$("$BB" timeout -t 2 wpa_cli -p "$WPA_DIR" -i wlan0 list_networks 2>/dev/null)
             NETWORK_IDS=$(printf '%s\n' "$NETWORKS" | "$BB" awk -F '\t' '$1 ~ /^[0-9]+$/ {print $1}')

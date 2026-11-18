@@ -323,6 +323,27 @@ echo launched >> "$base/launches"
         self.assertEqual(camera['adb_status']['serial'], '123456789ABCDEF')
         self.assertEqual(camera['recording_requested_action'], 'stop')
 
+    def test_agent_and_adb_launcher_move_their_own_pid_to_root_cgroup(self):
+        agent_setup = ON_CAMERA_AGENT_SCRIPT.split("trap '' HUP", 1)[0]
+        launcher_setup = camera_sta_bridge._ADB_ENSURE_STA_AGENT.split("/sbin/busybox setsid", 1)[0]
+        for name, script in (("agent", agent_setup), ("launcher", launcher_setup)):
+            with self.subTest(script=name):
+                root = Path(self.temp.name)
+                group = root / "cgroup.procs"
+                group.unlink(missing_ok=True)
+                # Execute startup up to the point where it would spawn the agent.
+                script = script.replace("/data/pocket-coffee", str(root))
+                for path in ("/acct", "/dev/cpuctl", "/dev/cg2_bpf"):
+                    script = script.replace(path + "/cgroup.procs", str(
+                        group if path == "/acct" else root / "missing" / "cgroup.procs"
+                    ))
+                result = subprocess.run(
+                    ["sh"], input=script + '\nprintf "%s\\n" "$$"\n',
+                    text=True, capture_output=True, check=True, timeout=5,
+                )
+                self.assertTrue(group.exists(), "startup did not migrate to root cpuacct")
+                self.assertEqual(group.read_text(), result.stdout)
+
     def test_agent_recovers_disconnected_supplicant(self):
         wlan = Path(self.temp.name, "wlan0")
         wlan.mkdir()
@@ -334,6 +355,11 @@ echo launched >> "$base/launches"
             ("healthy", ["reassociate", "reassociate"]),
             ("encoded", ["reassociate", "reassociate"]),
             ("completed", []),
+            ("stale_ip", ["kill", "clear", "start"]),
+            ("stale_no_supplicant", ["start"]),
+            ("stale_completed", ["kill", "clear", "start"]),
+            ("live_ip", []),
+            ("no_socket_live", []),
         ):
             with self.subTest(scenario=scenario):
                 harness = r"""
@@ -342,13 +368,25 @@ exec 3>&1
 bb() {
     case "$1" in
         timeout) shift 3; "$@";;
-        pidof) return 0;;
+        pidof) [ "$SCENARIO" != stale_no_supplicant ];;
         killall) echo kill;;
         udhcpc) :;;
         *) "$@";;
     esac
 }
-ip() { :; }
+ip() {
+    case "$*" in
+        'link show wlan0')
+            case "$SCENARIO" in
+                stale_*) echo '21: wlan0: <NO-CARRIER,BROADCAST,UP> state DOWN';;
+                *) echo '21: wlan0: <BROADCAST,UP,LOWER_UP> state UP';;
+            esac;;
+        '-4 addr show wlan0')
+            case "$SCENARIO" in
+                stale_*|live_ip|no_socket_live) echo 'inet 192.168.5.93/24';;
+            esac;;
+    esac
+}
 log() { :; }
 rm() { echo clear; }
 chown() { :; }
@@ -360,17 +398,18 @@ wpa_supplicant() {
 wpa_cli() {
     case "$5" in
         status)
-            if [ "$SCENARIO" = completed ]; then echo wpa_state=COMPLETED
-            else echo wpa_state=DISCONNECTED; fi;;
+            case "$SCENARIO" in
+                completed|live_ip|stale_completed) echo wpa_state=COMPLETED;;
+                no_socket_live|stale_no_supplicant) return 1;;
+                *) echo wpa_state=DISCONNECTED;;
+            esac;;
         list_networks)
             echo 'network id / ssid / bssid / flags'
-            if [ "$SCENARIO" = missing ]; then
-                printf '0\t%s guest\tany\t\n' "$WIFI_SSID"
-            elif [ "$SCENARIO" = encoded ]; then
-                printf '0\t%s\tany\t\n' '\xe4\xbd\xa0'
-            else
-                printf '0\t%s\tany\t\n' "$WIFI_SSID"
-            fi;;
+            case "$SCENARIO" in
+                missing|stale_*) printf '0\t%s guest\tany\t\n' "$WIFI_SSID";;
+                encoded) printf '0\t%s\tany\t\n' '\xe4\xbd\xa0';;
+                *) printf '0\t%s\tany\t\n' "$WIFI_SSID";;
+            esac;;
         get_network) printf %s e4bda0;;
         reassociate)
             echo reassociate >&3
@@ -378,14 +417,19 @@ wpa_cli() {
     esac
 }
 WIFI_SSID='coffee shop'
-WPA_CONF="$BASE_DIR/pocket_sta.conf"
+WPA_CONF="$BASE_DIR/pocket_sta_$SCENARIO.conf"
 if [ "$SCENARIO" = encoded ]; then
     WIFI_SSID='\u4f60'
     printf 'network={\n ssid=e4bda0\n}\n' > "$WPA_CONF"
 fi
 SERVER_IP=192.168.5.84
 """
-                calls = "ensure_sta; :" if scenario == "missing" else "ensure_sta; ensure_sta; :"
+                if scenario in ("missing", "stale_ip", "stale_completed", "stale_no_supplicant"):
+                    calls = 'if ensure_sta; then echo false_success; fi'
+                elif scenario in ("live_ip", "no_socket_live"):
+                    calls = "ensure_sta"
+                else:
+                    calls = "ensure_sta; ensure_sta; :"
                 result = subprocess.run(
                     ["sh"], input=harness + ensure_sta + calls, text=True, capture_output=True,
                     env={**os.environ, "BASE_DIR": self.temp.name, "SCENARIO": scenario},
