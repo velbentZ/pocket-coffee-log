@@ -253,6 +253,7 @@ class MultimodalVisionEngine:
                         capture_output=True,
                         text=True,
                         timeout=30,
+                        env=self._clean_subprocess_env(),
                     )
                     if proc.returncode == 0 and proc.stdout.strip():
                         return proc.stdout.strip(), []
@@ -260,6 +261,15 @@ class MultimodalVisionEngine:
                     pass
 
         return "", []
+
+    @staticmethod
+    def _clean_subprocess_env() -> Dict[str, str]:
+        env = dict(os.environ)
+        for key in ("TMPDIR", "TEMP", "TMP"):
+            val = env.get(key)
+            if val and not os.path.isdir(val):
+                env.pop(key, None)
+        return env
 
     @staticmethod
     def _transcribe_with_macos_speech(
@@ -342,7 +352,11 @@ if done, let transcription = transcription {
 """
         try:
             proc = subprocess.run(
-                [swift_bin, "-e", swift_script, media_path], capture_output=True, text=True, timeout=42,
+                [swift_bin, "-e", swift_script, media_path],
+                capture_output=True,
+                text=True,
+                timeout=42,
+                env=MultimodalVisionEngine._clean_subprocess_env(),
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 payload = json.loads(proc.stdout)
@@ -354,8 +368,13 @@ if done, let transcription = transcription {
     @staticmethod
     def _run_macos_keyframes(swift_bin, *args):
         try:
-            proc = subprocess.run([swift_bin, _SWIFT_KEYFRAMES, *args], capture_output=True,
-                                  text=True, timeout=30)
+            proc = subprocess.run(
+                [swift_bin, _SWIFT_KEYFRAMES, *args],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=MultimodalVisionEngine._clean_subprocess_env(),
+            )
             if proc.returncode == 0 and proc.stdout.strip():
                 return json.loads(proc.stdout)
         except (OSError, subprocess.TimeoutExpired, ValueError):

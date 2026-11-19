@@ -53,6 +53,12 @@ from daemon.voice_session import VoiceWakeupSessionManager
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 STATIC_DIR = os.path.join(PROJECT_ROOT, "static")
 
+for _tmp_var in ("TMPDIR", "TEMP", "TMP"):
+    _tmp_val = os.environ.get(_tmp_var)
+    if _tmp_val and not os.path.isdir(_tmp_val):
+        os.environ.pop(_tmp_var, None)
+tempfile.tempdir = None
+
 store = CoffeeStore(DATA_DIR)
 camera_bridge = CameraInternalBridge(DATA_DIR)
 notifier = NotificationManager(DATA_DIR)
@@ -309,7 +315,8 @@ def _camera_voice_chunk(body):
             ))
             if sys.byteorder != "little":
                 normalized.byteswap()
-            with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with tempfile.NamedTemporaryFile(suffix=".wav", dir=DATA_DIR) as audio:
                 with wave.open(audio, "wb") as wav:
                     wav.setparams((1, 2, 16000, 0, "NONE", ""))
                     wav.writeframes(normalized.tobytes())

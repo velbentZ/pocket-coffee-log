@@ -91,6 +91,50 @@ class CameraSTABridgeTests(unittest.TestCase):
         self.assertEqual(recovery['last_ble_attempt']['status'], 'sta_join_acknowledged')
         self.assertFalse(recovery['heartbeat_fresh'])
 
+    def test_ensure_sta_agent_over_lan_checks_multiple_ips_arp_and_reconnects_stale_tcp(self):
+        state = self.bridge.load_state()
+        state['cameras']['pocket4p'].update(
+            lan_ip='192.168.5.93',
+            mac_address='88:22:33:77:33:99',
+            verification={'verified_sta_ip': '192.168.5.93', 'last_observed_sta_ip': '192.168.5.93'},
+        )
+        state['auto_recovery'] = {
+            'lan_ip': '192.168.5.93',
+            'lan_ips': ['192.168.5.93'],
+            'lan_macs': ['88:22:33:77:33:99', '9c:5a:8a:97:4f:b5'],
+        }
+        arp_output = (
+            '? (192.168.5.93) at (incomplete) on en0 ifscope [ethernet]\n'
+            '? (192.168.5.94) at 9c:5a:8a:97:4f:b5 on en0 ifscope [ethernet]\n'
+        )
+        commands = []
+
+        def fake_run(argv, **kwargs):
+            commands.append(argv)
+            if argv[:2] == ['arp', '-an']:
+                return subprocess.CompletedProcess(argv, 0, arp_output, '')
+            if argv[-2:] == ['connect', '192.168.5.94:5555']:
+                return subprocess.CompletedProcess(argv, 0, 'connected to 192.168.5.94:5555\n', '')
+            if argv[-2:] == ['disconnect', '192.168.5.94:5555']:
+                return subprocess.CompletedProcess(argv, 0, 'disconnected 192.168.5.94:5555\n', '')
+            if 'shell' in argv:
+                shell_calls = sum(1 for c in commands if 'shell' in c)
+                if shell_calls == 1:
+                    return subprocess.CompletedProcess(argv, 1, '', 'error: device offline\n')
+                return subprocess.CompletedProcess(argv, 0, 'started\n', '')
+            return subprocess.CompletedProcess(argv, 0, '', '')
+
+        def fake_connect(addr, timeout=1):
+            if addr[0] == '192.168.5.93':
+                raise OSError('No route to host')
+            return io.BytesIO()
+
+        with patch('core.camera_sta_bridge.socket.create_connection', side_effect=fake_connect), \
+                patch('core.camera_sta_bridge.subprocess.run', side_effect=fake_run):
+            result = self.bridge.ensure_sta_agent_over_lan(state)
+        self.assertEqual(result, {'ok': True, 'status': 'started'})
+        self.assertTrue(any(c[-2:] == ['disconnect', '192.168.5.94:5555'] for c in commands))
+
     def test_ble_station_packet_payloads(self):
         from daemon import camera_auto_recovery as recovery
         pairing = recovery.build_ble_pairing_packet('client', 'osmo', 0x1234)

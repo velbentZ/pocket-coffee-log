@@ -12,6 +12,7 @@ import ipaddress
 import math
 import re
 import os
+import shutil
 import socket
 import struct
 import subprocess
@@ -935,24 +936,66 @@ class CameraInternalBridge:
                            else last.get("status", "waiting")),
                 "last_check": last or None, "last_ble_attempt": self._recovery_last_ble}
 
+    @staticmethod
+    def _resolve_adb_binary(settings: Dict[str, Any]) -> str:
+        binary = os.environ.get("POCKET_ADB", settings.get("binary", "adb"))
+        if binary == "adb" and shutil.which("adb") is None:
+            for candidate in ("/opt/homebrew/bin/adb", "/usr/local/bin/adb"):
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    return candidate
+        return binary
+
+    @staticmethod
+    def _arp_ips_for_macs(macs: List[str]) -> List[str]:
+        wanted = {mac.lower() for mac in macs}
+        if not wanted:
+            return []
+        try:
+            proc = subprocess.run(["arp", "-an"], capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        matches: List[str] = []
+        for line in (proc.stdout or "").splitlines():
+            m = re.search(
+                r"\((\d{1,3}(?:\.\d{1,3}){3})\)\s+at\s+([0-9a-fA-F]{1,2}(?::[0-9a-fA-F]{1,2}){5})\b",
+                line,
+            )
+            if not m:
+                continue
+            normalized_mac = ":".join(f"{int(part, 16):02x}" for part in m.group(2).split(":"))
+            if normalized_mac in wanted:
+                matches.append(m.group(1))
+        return matches
+
     def ensure_sta_agent_over_lan(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Use the existing ADB listener on a known camera; never enable network ADB."""
         camera = state.get("cameras", {}).get("pocket4p", {})
-        verified_ip = camera.get("verification", {}).get("verified_sta_ip")
+        verification = camera.get("verification", {})
+        verified_ip = verification.get("verified_sta_ip")
         recovery = state.get("auto_recovery", {})
-        candidates = (recovery.get("lan_ip"), verified_ip)
+        lan_ips = recovery.get("lan_ips", [])
+        if not isinstance(lan_ips, list):
+            lan_ips = []
         macs = recovery.get("lan_macs", [])
         if not isinstance(macs, list):
             macs = []
-        if verified_ip:
+        if verified_ip or camera.get("mac_address"):
             macs = [camera.get("mac_address"), *macs]
         macs = sorted({mac.lower() for mac in macs if isinstance(mac, str)
                        and re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac)})
         unavailable = {"ok": False, "status": "lan_adb_unavailable"}
         if not macs:
             return unavailable
+        candidates = [
+            *lan_ips,
+            recovery.get("lan_ip"),
+            camera.get("lan_ip"),
+            verified_ip,
+            verification.get("last_observed_sta_ip"),
+            *self._arp_ips_for_macs(macs),
+        ]
         settings = state.get("adb", {})
-        binary = os.environ.get("POCKET_ADB", settings.get("binary", "adb"))
+        binary = self._resolve_adb_binary(settings)
         try:
             network = ipaddress.IPv4Network(state["sta_network"]["subnet"])
             port = int(camera.get("adb_port", 5555))
@@ -975,6 +1018,12 @@ class CameraInternalBridge:
                     check = ('case "$(cat /sys/class/net/wlan0/address 2>/dev/null)" in '
                              f'{allowed}) ;; *) exit 42 ;; esac\n')
                     result = self._run_sta_agent(base + ["-s", target], check + _ADB_ENSURE_STA_AGENT)
+                    if result["status"] == "start_unconfirmed":
+                        # A stale TCP transport can stay marked 'offline' in the host ADB server
+                        # across camera reboot until explicitly disconnected and reconnected.
+                        subprocess.run(base + ["disconnect", target], capture_output=True, text=True, timeout=5)
+                        subprocess.run(base + ["connect", target], capture_output=True, text=True, timeout=5)
+                        result = self._run_sta_agent(base + ["-s", target], check + _ADB_ENSURE_STA_AGENT)
                     if result["status"] != "start_unconfirmed":
                         return result
                 except (ValueError, OSError, subprocess.TimeoutExpired):
@@ -1117,7 +1166,7 @@ class CameraInternalBridge:
         if cam is None:
             return {"ok": False, "error": f"Unknown camera device_id: {device_id}"}
         settings = state.get("adb", {})
-        binary = os.environ.get("POCKET_ADB", settings.get("binary", "adb"))
+        binary = self._resolve_adb_binary(settings)
         port = str(os.environ.get("POCKET_ADB_PORT", settings.get("server_port", 5037)))
         try:
             if not 1 <= int(port) <= 65535:
@@ -1135,8 +1184,14 @@ class CameraInternalBridge:
             serial = cam.get("adb_serial")
             # Never pick an arbitrary attached phone or use product name as USB serial.
             candidates = [serial] if serial else []
-            if cam.get("lan_ip"):
-                candidates.append(f"{cam['lan_ip']}:{cam.get('adb_port', 5555)}")
+            adb_port = cam.get("adb_port", 5555)
+            for ip in dict.fromkeys(filter(None, [
+                cam.get("lan_ip"),
+                cam.get("verification", {}).get("verified_sta_ip"),
+                state.get("auto_recovery", {}).get("lan_ip"),
+                *(state.get("auto_recovery", {}).get("lan_ips") or []),
+            ])):
+                candidates.append(f"{ip}:{adb_port}")
             for target in candidates:
                 if devices.get(target) == "device":
                     return {"ok": True, "argv": base + ["-s", target], "serial": target,
