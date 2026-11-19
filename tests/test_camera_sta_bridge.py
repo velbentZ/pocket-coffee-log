@@ -566,6 +566,100 @@ wait
 """)
         self.assertEqual([p['file_path'] for p in payloads], ['/media/new.MP4'])
 
+    def test_agent_ensure_adbd_restarts_stopped_adbd_and_applies_pending_shutter(self):
+        payloads = self.run_agent_functions(r"""
+exec 3>&1
+ADBD_RUNNING=0
+bb() {
+    case "$1" in
+        pidof) [ "$ADBD_RUNNING" = 1 ];;
+        df) printf 'Filesystem 1K-blocks Used Available Use%% Mounted on\n/dev/block/by-name/media\n 109242368 3108352 106134016 3%% /mnt/media_rw/emulated\n';;
+        *) "$@";;
+    esac
+}
+setprop() { :; }
+start() {
+    [ "$1" = adbd ] && ADBD_RUNNING=1 && printf '{"event":"started_adbd"}\n' >&3
+}
+dji_mb_ctrl() {
+    for LAST_ARG in "$@"; do :; done
+    printf '{"event":"shutter","arg":"%s"}\n' "$LAST_ARG" >&3
+    return 0
+}
+post_json() {
+    RESPONSE='HTTP/1.0 200 OK
+Content-Type: application/json
+
+{"ok":true,"pending_shutter":"start"}'
+    return 0
+}
+ensure_adbd
+ensure_adbd
+heartbeat
+printf '{"rec":"%s"}\n' "$REC" >&3
+""")
+        self.assertEqual(payloads, [
+            {'event': 'started_adbd'},
+            {'event': 'shutter', 'arg': '01'},
+            {'rec': 'true'},
+        ])
+
+    def test_touch_camera_activity_and_pending_shutter_delivery(self):
+        self.bridge.record_heartbeat(dict(device_id='pocket4p', ip='192.168.5.93',
+            mac_address='88:22:33:77:33:99', wifi_mode='STA'), '192.168.5.93')
+        state = self.bridge.load_state()
+        old_ts = (datetime.now(timezone.utc) - timedelta(seconds=19)).isoformat()
+        state['cameras']['pocket4p']['last_heartbeat'] = old_ts
+        self.bridge.save_state(state)
+        self.assertFalse(self.bridge.touch_camera_activity('pocket4p', '192.168.5.99'))
+        self.assertTrue(self.bridge.touch_camera_activity('pocket4p', '192.168.5.93'))
+        self.assertNotEqual(self.bridge.load_state()['cameras']['pocket4p']['last_heartbeat'], old_ts)
+
+        with patch.object(self.bridge, 'adb_transport', return_value={'ok': False, 'error': 'offline'}), \
+                patch('core.camera_sta_bridge.socket.socket'):
+            self.bridge.trigger_lan_recording('pocket4p', 'start')
+        hb = self.bridge.record_heartbeat(dict(device_id='pocket4p', ip='192.168.5.93',
+            mac_address='88:22:33:77:33:99', wifi_mode='STA'), '192.168.5.93')
+        self.assertEqual(hb.get('pending_shutter'), 'start')
+        hb2 = self.bridge.record_heartbeat(dict(device_id='pocket4p', ip='192.168.5.93',
+            mac_address='88:22:33:77:33:99', wifi_mode='STA'), '192.168.5.93')
+        self.assertNotIn('pending_shutter', hb2)
+
+    def test_auto_recovery_skips_ble_when_agent_httpd_is_alive_on_lan(self):
+        self.bridge.record_heartbeat(dict(device_id='pocket4p', ip='192.168.5.93',
+            mac_address='88:22:33:77:33:99', wifi_mode='STA'), '192.168.5.93')
+        state = self.bridge.load_state()
+        state['cameras']['pocket4p']['last_heartbeat'] = (
+            datetime.now(timezone.utc) - timedelta(seconds=35)).isoformat()
+        self.bridge.save_state(state)
+        with patch.object(self.bridge, 'ensure_sta_agent_over_usb',
+                          return_value={'ok': False, 'status': 'usb_unavailable'}), \
+             patch.object(self.bridge, 'ensure_sta_agent_over_lan',
+                          return_value={'ok': False, 'status': 'lan_adb_unavailable'}), \
+             patch.object(self.bridge, '_is_agent_httpd_reachable', return_value=True), \
+             patch('daemon.camera_auto_recovery.provision_over_ble') as ble:
+            result = self.bridge.recover_camera_once()
+        self.assertEqual((result['transport'], result['status']), ('lan_http', 'agent_http_alive'))
+        ble.assert_not_called()
+
+    def test_media_list_falls_back_to_heartbeat_latest_media_when_adb_is_offline(self):
+        self.bridge.record_heartbeat(dict(
+            device_id='pocket4p', ip='192.168.5.93', mac_address='88:22:33:77:33:99',
+            wifi_mode='STA', latest_media_file='DJI_20261119112016_0054_D.MP4',
+            latest_media_url='http://192.168.5.93:8088/DJI_001/DJI_20261119112016_0054_D.MP4',
+        ), '192.168.5.93')
+        head = io.BytesIO()
+        head.headers = {'Content-Length': '34488257', 'Last-Modified': 'Thu, 19 Nov 2026 03:20:24 GMT'}
+        with patch('core.camera_sta_bridge.urllib_request.urlopen',
+                   side_effect=[OSError('404 Not Found'), head]), \
+             patch.object(self.bridge, 'execute_internal_command',
+                          return_value={'ok': False, 'error': 'offline'}):
+            result = self.bridge.list_remote_media('pocket4p')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['source'], 'heartbeat_http')
+        self.assertEqual(result['files'][0]['name'], 'DJI_20261119112016_0054_D.MP4')
+        self.assertEqual(result['files'][0]['size_bytes'], 34488257)
+
 
 class ProvisionCameraCLITests(unittest.TestCase):
     def setUp(self):

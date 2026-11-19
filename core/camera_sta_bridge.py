@@ -25,6 +25,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib import request as urllib_request
 from urllib.error import URLError
 
+for _proxy_var in ("NO_PROXY", "no_proxy"):
+    os.environ[_proxy_var] = "*"
+
 
 # ---------------------------------------------------------------------------
 # 1. DUML Protocol & BLE / Wi-Fi STA Packet Builder
@@ -387,6 +390,31 @@ sync_clock() {
     fi
 }
 
+ensure_adbd() {
+    # Keep active USB ADB untouched; only restart adbd if it was stopped (e.g. after USB unplug sets sys.usb.config=none).
+    if ! "$BB" pidof adbd >/dev/null 2>&1; then
+        setprop service.adb.tcp.port 5555 2>/dev/null || true
+        setprop persist.adb.tcp.port 5555 2>/dev/null || true
+        start adbd 2>/dev/null || { /system/bin/adbd >/dev/null 2>&1 & }
+        log "restarted stopped adbd on TCP 5555"
+    fi
+}
+
+apply_pending_shutter() {
+    case "$RESPONSE" in
+        *'"pending_shutter":"start"'*|*'"pending_shutter": "start"'*)
+            if dji_mb_ctrl -S test -R diag -g 1 -t 0 -s 2 -c 0x02 01 >> "$BASE_DIR/agent.log" 2>&1; then
+                REC=true
+                log "heartbeat pending_shutter: START dispatched"
+            fi;;
+        *'"pending_shutter":"stop"'*|*'"pending_shutter": "stop"'*)
+            if dji_mb_ctrl -S test -R diag -g 1 -t 0 -s 2 -c 0x02 00 >> "$BASE_DIR/agent.log" 2>&1; then
+                REC=false
+                log "heartbeat pending_shutter: STOP dispatched"
+            fi;;
+    esac
+}
+
 heartbeat() {
     MAC=$(cat /sys/class/net/wlan0/address)
     BATTERY_PERCENT=$(battery_capacity)
@@ -399,6 +427,7 @@ heartbeat() {
     BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v7-hg224-camera-mic\",\"battery_percent\":$BATTERY_PERCENT,\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
     if post_json /api/camera/heartbeat "$BODY"; then
         sync_clock
+        apply_pending_shutter
         log "heartbeat accepted ip=$CURRENT_IP battery_percent=$BATTERY_PERCENT sd_free_gb=$SD_FREE_GB latest_media_file=$LATEST_MEDIA_FILE"
     else
         log "heartbeat failed: $RESPONSE"
@@ -486,7 +515,7 @@ read_shutter_marker() {
 }
 
 log 'Starting STA agent; boot auto-start is not installed by this script'
-# Keep USB ADB untouched; this agent never restarts or reconfigures adbd.
+ensure_adbd
 INITIAL_MP4=$(newest_mp4)
 [ -e "$BASE_DIR/last_mp4.txt" ] || printf '%s\n' "${INITIAL_MP4##*/}" > "$BASE_DIR/last_mp4.txt"
 REC=false
@@ -498,6 +527,7 @@ if [ -d "$DCIM_DIR" ]; then
     "$BB" httpd -p 8088 -h "$DCIM_DIR" 2>> "$BASE_DIR/agent.log"
 fi
 if [ "${RUN_ONCE:-0}" = 1 ]; then
+    ensure_adbd
     if ensure_sta; then
         heartbeat
         read_shutter_marker
@@ -524,10 +554,11 @@ while true; do
     capture_voice_chunk "$NEXT_WAV" &
     CAPTURE_PID=$!
     [ "$CAPTURE_OK" = 1 ] || log "mic voice polling: capture failed"
+    ensure_adbd
     if ensure_sta; then
         read_shutter_marker
-        [ "$CAPTURE_OK" = 1 ] && poll_voice_chunk "$CUR_WAV"
         heartbeat
+        [ "$CAPTURE_OK" = 1 ] && poll_voice_chunk "$CUR_WAV"
         watch_mp4
     else
         sleep 3
@@ -573,6 +604,8 @@ class CameraInternalBridge:
         self.data_dir = data_dir
         self.config_path = os.path.join(data_dir, "camera_sta_config.json")
         self.script_export_path = os.path.join(data_dir, "pocket_sta_agent.sh")
+        self._state_lock = threading.RLock()
+        self._pending_shutter: Dict[str, str] = {}
         self._ensure_default_config()
         self._recovery_lock = threading.Lock()
         self._recovery_wake = threading.Event()
@@ -612,65 +645,91 @@ class CameraInternalBridge:
                 json.dump(default_cfg, f, ensure_ascii=False, indent=2)
 
     def load_state(self) -> Dict[str, Any]:
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with self._state_lock:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
 
     def save_state(self, state: Dict[str, Any]) -> None:
         # The watcher reads while the HTTP handler writes heartbeats.
-        fd, temporary = tempfile.mkstemp(prefix=".camera-sta-", dir=self.data_dir)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(state, f, ensure_ascii=False, indent=2)
-            os.replace(temporary, self.config_path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        with self._state_lock:
+            fd, temporary = tempfile.mkstemp(prefix=".camera-sta-", dir=self.data_dir)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(state, f, ensure_ascii=False, indent=2)
+                os.replace(temporary, self.config_path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+
+    def touch_camera_activity(self, device_id: Optional[str], source_ip: str) -> bool:
+        """Refresh last_heartbeat when verified STA activity (voice_chunk/webhook) arrives."""
+        if not device_id or not source_ip:
+            return False
+        with self._state_lock:
+            state = self.load_state()
+            camera = state.get("cameras", {}).get(device_id)
+            if not camera:
+                return False
+            verification = camera.get("verification") or {}
+            verified_ip = verification.get("verified_sta_ip") or camera.get("lan_ip")
+            if not verification.get("heartbeat_verified") or source_ip != verified_ip:
+                return False
+            now = datetime.now().astimezone().isoformat()
+            camera["last_heartbeat"] = now
+            verification["checked_at"] = now
+            self.save_state(state)
+            return True
 
     def record_heartbeat(self, payload: Dict[str, Any], source_ip: str) -> Dict[str, Any]:
         """Record agent observations; verify STA only for a matching LAN peer."""
-        state = self.load_state()
-        if not isinstance(payload, dict):
-            return {"ok": False, "error": "Expected a JSON object"}
-        device_id = payload.get("device_id")
-        if not isinstance(device_id, str) or device_id not in state["cameras"]:
-            return {"ok": False, "error": "Unknown camera"}
-        try:
-            address = ipaddress.IPv4Address(payload.get("ip", ""))
-            network = ipaddress.IPv4Network(state["sta_network"]["subnet"])
-            if address not in network or address in (network.network_address, network.broadcast_address):
-                raise ValueError("Address outside STA network")
-            mac = payload.get("mac_address", "")
-            if not isinstance(mac, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac):
-                raise ValueError("Invalid MAC address")
-            if payload.get("wifi_mode") != "STA":
-                raise ValueError("Expected STA mode")
-        except (ValueError, TypeError) as error:
-            return {"ok": False, "error": str(error)}
-        now = datetime.now().astimezone().isoformat()
-        camera = state["cameras"][device_id]
-        verified = source_ip == str(address)
-        camera.update(lan_ip=str(address), mac_address=mac.lower(),
-                      ssid=str(payload.get("ssid", "")), wifi_mode="STA" if verified else "unverified",
-                      last_heartbeat=now, internal_daemon_installed=True,
-                      internal_daemon_version=str(payload.get("agent_version", "")))
-        for key in ("sd_free_gb", "latest_media_file", "latest_media_url"):
-            if key in payload:
-                camera[key] = payload[key]
-        if verified:
-            battery = payload.get("battery_percent")
-            if "battery_percent" in payload and (
-                battery is None or (type(battery) is int and 0 <= battery <= 100)
-            ):
-                camera["battery_percent"] = battery
-            if payload.get("recording_state") in ("recording", "idle", "unknown"):
-                camera["recording_state"] = payload["recording_state"]
-        camera.setdefault("verification", {}).update(
-            checked_at=now, status="live_sta_heartbeat" if verified else "heartbeat_source_mismatch",
-            heartbeat_verified=verified, sta_connection_verified=verified,
-            agent_installation_verified=verified, verified_sta_ip=str(address) if verified else None,
-            heartbeat_source_ip=source_ip, mac_address_source="Agent wlan0 sysfs observation")
-        self.save_state(state)
-        return {"ok": True, "device_id": device_id, "last_heartbeat": now, "sta_verified": verified}
+        with self._state_lock:
+            state = self.load_state()
+            if not isinstance(payload, dict):
+                return {"ok": False, "error": "Expected a JSON object"}
+            device_id = payload.get("device_id")
+            if not isinstance(device_id, str) or device_id not in state["cameras"]:
+                return {"ok": False, "error": "Unknown camera"}
+            try:
+                address = ipaddress.IPv4Address(payload.get("ip", ""))
+                network = ipaddress.IPv4Network(state["sta_network"]["subnet"])
+                if address not in network or address in (network.network_address, network.broadcast_address):
+                    raise ValueError("Address outside STA network")
+                mac = payload.get("mac_address", "")
+                if not isinstance(mac, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac):
+                    raise ValueError("Invalid MAC address")
+                if payload.get("wifi_mode") != "STA":
+                    raise ValueError("Expected STA mode")
+            except (ValueError, TypeError) as error:
+                return {"ok": False, "error": str(error)}
+            now = datetime.now().astimezone().isoformat()
+            camera = state["cameras"][device_id]
+            verified = source_ip == str(address)
+            camera.update(lan_ip=str(address), mac_address=mac.lower(),
+                          ssid=str(payload.get("ssid", "")), wifi_mode="STA" if verified else "unverified",
+                          last_heartbeat=now, internal_daemon_installed=True,
+                          internal_daemon_version=str(payload.get("agent_version", "")))
+            for key in ("sd_free_gb", "latest_media_file", "latest_media_url"):
+                if key in payload:
+                    camera[key] = payload[key]
+            if verified:
+                battery = payload.get("battery_percent")
+                if "battery_percent" in payload and (
+                    battery is None or (type(battery) is int and 0 <= battery <= 100)
+                ):
+                    camera["battery_percent"] = battery
+                if payload.get("recording_state") in ("recording", "idle", "unknown"):
+                    camera["recording_state"] = payload["recording_state"]
+            camera.setdefault("verification", {}).update(
+                checked_at=now, status="live_sta_heartbeat" if verified else "heartbeat_source_mismatch",
+                heartbeat_verified=verified, sta_connection_verified=verified,
+                agent_installation_verified=verified, verified_sta_ip=str(address) if verified else None,
+                heartbeat_source_ip=source_ip, mac_address_source="Agent wlan0 sysfs observation")
+            pending_shutter = self._pending_shutter.pop(device_id, None) if verified else None
+            self.save_state(state)
+            res: Dict[str, Any] = {"ok": True, "device_id": device_id, "last_heartbeat": now, "sta_verified": verified}
+            if pending_shutter in ("start", "stop"):
+                res["pending_shutter"] = pending_shutter
+            return res
 
     def sta_status(self) -> Dict[str, Any]:
         state = self.load_state()
@@ -1032,6 +1091,25 @@ class CameraInternalBridge:
         except (KeyError, ValueError, TypeError):
             return unavailable
 
+    def _is_agent_httpd_reachable(self, state: Dict[str, Any], device_id: str = "pocket4p") -> bool:
+        camera = state.get("cameras", {}).get(device_id, {})
+        verification = camera.get("verification") or {}
+        recovery = state.get("auto_recovery") or {}
+        http_port = int(camera.get("http_media_port", 8088))
+        candidates = [
+            verification.get("verified_sta_ip"),
+            camera.get("lan_ip"),
+            recovery.get("lan_ip"),
+            *(recovery.get("lan_ips") or []),
+        ]
+        for ip in dict.fromkeys(v for v in candidates if isinstance(v, str) and v):
+            try:
+                with socket.create_connection((ip, http_port), timeout=0.6):
+                    return True
+            except OSError:
+                continue
+        return False
+
     def recover_camera_once(self, *, now=None) -> Dict[str, Any]:
         """Check one transport at a time, keeping the HTTP server responsive."""
         from daemon.camera_auto_recovery import BLERecoveryError, provision_over_ble
@@ -1054,6 +1132,9 @@ class CameraInternalBridge:
                 lan = self.ensure_sta_agent_over_lan(state)
                 if lan["status"] != "lan_adb_unavailable":
                     result.update(transport="lan_adb", status=lan["status"])
+                elif age is not None and age <= 120 and self._is_agent_httpd_reachable(state, "pocket4p"):
+                    # Agent httpd (:8088) is live on STA Wi-Fi; do not disrupt wlan0 with BLE STA join.
+                    result.update(transport="lan_http", status="agent_http_alive")
                 elif time.monotonic() < self._next_ble_attempt:
                     result.update(transport="ble", status="waiting_for_lan")
                 else:
@@ -1184,18 +1265,37 @@ class CameraInternalBridge:
             serial = cam.get("adb_serial")
             # Never pick an arbitrary attached phone or use product name as USB serial.
             candidates = [serial] if serial else []
-            adb_port = cam.get("adb_port", 5555)
-            for ip in dict.fromkeys(filter(None, [
+            adb_port = int(cam.get("adb_port", 5555))
+            tcp_ips = list(dict.fromkeys(filter(None, [
                 cam.get("lan_ip"),
                 cam.get("verification", {}).get("verified_sta_ip"),
                 state.get("auto_recovery", {}).get("lan_ip"),
                 *(state.get("auto_recovery", {}).get("lan_ips") or []),
-            ])):
+            ])))
+            for ip in tcp_ips:
                 candidates.append(f"{ip}:{adb_port}")
             for target in candidates:
                 if devices.get(target) == "device":
                     return {"ok": True, "argv": base + ["-s", target], "serial": target,
                             "transport": "usb" if target == serial else "tcp"}
+            # Auto-connect / reconnect configured LAN TCP ADB if reachable on the network.
+            for ip in tcp_ips:
+                target = f"{ip}:{adb_port}"
+                try:
+                    with socket.create_connection((ip, adb_port), timeout=0.6):
+                        pass
+                except OSError:
+                    continue
+                if devices.get(target) == "offline":
+                    subprocess.run(base + ["disconnect", target], capture_output=True, text=True, timeout=4)
+                subprocess.run(base + ["connect", target], capture_output=True, text=True, timeout=4)
+                recheck = subprocess.run(base + ["devices", "-l"], capture_output=True, text=True, timeout=4)
+                if recheck.returncode == 0:
+                    for line in recheck.stdout.splitlines():
+                        fields = line.split()
+                        if len(fields) >= 2 and fields[0] == target and fields[1] == "device":
+                            return {"ok": True, "argv": base + ["-s", target], "serial": target,
+                                    "transport": "tcp"}
             return {"ok": False, "error": "No live ADB transport; command was not executed",
                     "devices": devices, "configured_serial": serial}
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
@@ -1225,7 +1325,7 @@ class CameraInternalBridge:
                 "live_socket_connected": proc.returncode == 0}
 
     def list_remote_media(self, device_id: str = "pocket4p") -> Dict[str, Any]:
-        """List actual camera MP4s, newest first; directory-less httpd uses ADB."""
+        """List actual camera MP4s, newest first; directory-less httpd uses ADB or heartbeat HEAD."""
         camera = self.load_state().get("cameras", {}).get(device_id)
         if not camera or not camera.get("lan_ip"):
             return {"ok": False, "error": "Camera has no configured LAN address", "files": []}
@@ -1254,24 +1354,40 @@ class CameraInternalBridge:
             files = []
             result = self.execute_internal_command(device_id,
                 "/sbin/busybox ls -lnt /mnt/media_rw/emulated/DCIM/DJI_001/*.MP4")
-            if not result.get("ok"):
-                return {"ok": False, "error": result.get("error", "ADB listing failed"),
-                        "http_error": http_error, "files": []}
-            for line in result.get("output", "").splitlines():
-                fields = line.split(None, 8)
-                if len(fields) != 9 or not fields[0].startswith("-"):
-                    continue
-                name = os.path.basename(fields[8])
-                if not re.fullmatch(r"[A-Za-z0-9_. -]+\.MP4", name, re.I):
-                    continue
-                try:
-                    size = int(fields[4])
-                except ValueError:
-                    continue
-                url = base_url + quote(name)
-                files.append({"name": name, "file_path": "/mnt/media_rw/emulated/DCIM/DJI_001/" + name,
-                              "url": url, "media_url": url, "size_bytes": size})
-            source = "adb"
+            if result.get("ok"):
+                for line in result.get("output", "").splitlines():
+                    fields = line.split(None, 8)
+                    if len(fields) != 9 or not fields[0].startswith("-"):
+                        continue
+                    name = os.path.basename(fields[8])
+                    if not re.fullmatch(r"[A-Za-z0-9_. -]+\.MP4", name, re.I):
+                        continue
+                    try:
+                        size = int(fields[4])
+                    except ValueError:
+                        continue
+                    url = base_url + quote(name)
+                    files.append({"name": name, "file_path": "/mnt/media_rw/emulated/DCIM/DJI_001/" + name,
+                                  "url": url, "media_url": url, "size_bytes": size})
+                source = "adb"
+            else:
+                latest_name = os.path.basename(camera.get("latest_media_file") or "")
+                if re.fullmatch(r"[A-Za-z0-9_. -]+\.MP4", latest_name, re.I):
+                    url = base_url + quote(latest_name)
+                    try:
+                        with urllib_request.urlopen(urllib_request.Request(url, method="HEAD"), timeout=4) as response:
+                            size = int(response.headers["Content-Length"])
+                            modified = response.headers.get("Last-Modified", "")
+                        timestamp = parsedate_to_datetime(modified).timestamp() if modified else 0
+                        files.append({"name": latest_name,
+                                      "file_path": "/mnt/media_rw/emulated/DCIM/DJI_001/" + latest_name,
+                                      "url": url, "media_url": url, "size_bytes": size, "modified": timestamp})
+                        source = "heartbeat_http"
+                    except (OSError, ValueError, TypeError, KeyError):
+                        pass
+                if not files:
+                    return {"ok": False, "error": result.get("error", "ADB listing failed"),
+                            "http_error": http_error, "files": []}
         def sequence_key(item):
             match = re.fullmatch(r"DJI_\d+_(\d{4})_D\.MP4", item["name"], re.I)
             return (int(match[1]) if match else -1, item.get("modified", 0))
@@ -1414,9 +1530,10 @@ class CameraInternalBridge:
             **dispatch,
         }
         # Reload after I/O to preserve heartbeats received while writing to the transports.
-        state = self.load_state()
-        state["command_log"] = [log_entry, *state.get("command_log", [])][:25]
-        self.save_state(state)
+        with self._state_lock:
+            state = self.load_state()
+            state["command_log"] = [log_entry, *state.get("command_log", [])][:25]
+            self.save_state(state)
         ok = usb_sent or udp_sent_to is not None
         return {"ok": ok, **({} if ok else {"error": "No DUML transport dispatched the frame"}),
                 "device_id": device_id, "preset": preset, "label": settings["label"],
@@ -1484,22 +1601,27 @@ class CameraInternalBridge:
             except (OSError, subprocess.TimeoutExpired) as exc:
                 adb_status["shutter_error"] = str(exc)
         # Reload after ADB I/O so a concurrent heartbeat is usually preserved.
-        state = self.load_state()
-        cam = state["cameras"][device_id]
-        cam["adb_status"] = adb_status
-        # Transport availability and dispatched frames do not confirm recording.
-        cam["recording_state"] = "unknown"
-        cam["recording_requested_action"] = "start" if is_start else "stop"
+        with self._state_lock:
+            if adb_shutter_dispatched:
+                self._pending_shutter.pop(device_id, None)
+            else:
+                self._pending_shutter[device_id] = action
+            state = self.load_state()
+            cam = state["cameras"][device_id]
+            cam["adb_status"] = adb_status
+            # Transport availability and dispatched frames do not confirm recording.
+            cam["recording_state"] = "unknown"
+            cam["recording_requested_action"] = "start" if is_start else "stop"
 
-        log_entry = {
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "target": f"{device_id} ({ip}:9004 / USB_EP04={usb_sent})",
-            "cmd": f"DUML [02:02] Shutter {'START (0x01)' if is_start else 'STOP (0x00)'}",
-            "output": f"Sent {len(pkt)}B DUML frame ({pkt.hex(' ').upper()}) -> recording unverified; ADB={adb_status}",
-        }
-        state.setdefault("command_log", []).insert(0, log_entry)
-        state["command_log"] = state["command_log"][:25]
-        self.save_state(state)
+            log_entry = {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "target": f"{device_id} ({ip}:9004 / USB_EP04={usb_sent})",
+                "cmd": f"DUML [02:02] Shutter {'START (0x01)' if is_start else 'STOP (0x00)'}",
+                "output": f"Sent {len(pkt)}B DUML frame ({pkt.hex(' ').upper()}) -> recording unverified; ADB={adb_status}",
+            }
+            state.setdefault("command_log", []).insert(0, log_entry)
+            state["command_log"] = state["command_log"][:25]
+            self.save_state(state)
 
         return {
             "ok": True,

@@ -184,6 +184,31 @@ sync_clock() {
     fi
 }
 
+ensure_adbd() {
+    # Keep active USB ADB untouched; only restart adbd if it was stopped (e.g. after USB unplug sets sys.usb.config=none).
+    if ! "$BB" pidof adbd >/dev/null 2>&1; then
+        setprop service.adb.tcp.port 5555 2>/dev/null || true
+        setprop persist.adb.tcp.port 5555 2>/dev/null || true
+        start adbd 2>/dev/null || { /system/bin/adbd >/dev/null 2>&1 & }
+        log "restarted stopped adbd on TCP 5555"
+    fi
+}
+
+apply_pending_shutter() {
+    case "$RESPONSE" in
+        *'"pending_shutter":"start"'*|*'"pending_shutter": "start"'*)
+            if dji_mb_ctrl -S test -R diag -g 1 -t 0 -s 2 -c 0x02 01 >> "$BASE_DIR/agent.log" 2>&1; then
+                REC=true
+                log "heartbeat pending_shutter: START dispatched"
+            fi;;
+        *'"pending_shutter":"stop"'*|*'"pending_shutter": "stop"'*)
+            if dji_mb_ctrl -S test -R diag -g 1 -t 0 -s 2 -c 0x02 00 >> "$BASE_DIR/agent.log" 2>&1; then
+                REC=false
+                log "heartbeat pending_shutter: STOP dispatched"
+            fi;;
+    esac
+}
+
 heartbeat() {
     MAC=$(cat /sys/class/net/wlan0/address)
     BATTERY_PERCENT=$(battery_capacity)
@@ -196,6 +221,7 @@ heartbeat() {
     BODY="{\"device_id\":\"$(json_escape "$DEVICE_ID")\",\"ip\":\"$CURRENT_IP\",\"mac_address\":\"$MAC\",\"ssid\":\"$(json_escape "$WIFI_SSID")\",\"wifi_mode\":\"STA\",\"agent_version\":\"v7-hg224-camera-mic\",\"battery_percent\":$BATTERY_PERCENT,\"sd_free_gb\":$SD_FREE_GB,\"latest_media_file\":\"$(json_escape "$LATEST_MEDIA_FILE")\",\"latest_media_url\":\"$(json_escape "$LATEST_MEDIA_URL")\"}"
     if post_json /api/camera/heartbeat "$BODY"; then
         sync_clock
+        apply_pending_shutter
         log "heartbeat accepted ip=$CURRENT_IP battery_percent=$BATTERY_PERCENT sd_free_gb=$SD_FREE_GB latest_media_file=$LATEST_MEDIA_FILE"
     else
         log "heartbeat failed: $RESPONSE"
@@ -283,7 +309,7 @@ read_shutter_marker() {
 }
 
 log 'Starting STA agent; boot auto-start is not installed by this script'
-# Keep USB ADB untouched; this agent never restarts or reconfigures adbd.
+ensure_adbd
 INITIAL_MP4=$(newest_mp4)
 [ -e "$BASE_DIR/last_mp4.txt" ] || printf '%s\n' "${INITIAL_MP4##*/}" > "$BASE_DIR/last_mp4.txt"
 REC=false
@@ -295,6 +321,7 @@ if [ -d "$DCIM_DIR" ]; then
     "$BB" httpd -p 8088 -h "$DCIM_DIR" 2>> "$BASE_DIR/agent.log"
 fi
 if [ "${RUN_ONCE:-0}" = 1 ]; then
+    ensure_adbd
     if ensure_sta; then
         heartbeat
         read_shutter_marker
@@ -321,10 +348,11 @@ while true; do
     capture_voice_chunk "$NEXT_WAV" &
     CAPTURE_PID=$!
     [ "$CAPTURE_OK" = 1 ] || log "mic voice polling: capture failed"
+    ensure_adbd
     if ensure_sta; then
         read_shutter_marker
-        [ "$CAPTURE_OK" = 1 ] && poll_voice_chunk "$CUR_WAV"
         heartbeat
+        [ "$CAPTURE_OK" = 1 ] && poll_voice_chunk "$CUR_WAV"
         watch_mp4
     else
         sleep 3

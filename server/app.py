@@ -59,6 +59,9 @@ for _tmp_var in ("TMPDIR", "TEMP", "TMP"):
         os.environ.pop(_tmp_var, None)
 tempfile.tempdir = None
 
+for _proxy_var in ("NO_PROXY", "no_proxy"):
+    os.environ[_proxy_var] = "*"
+
 store = CoffeeStore(DATA_DIR)
 camera_bridge = CameraInternalBridge(DATA_DIR)
 notifier = NotificationManager(DATA_DIR)
@@ -514,7 +517,11 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= VOICE_CHUNK_MAX_BODY:
                     raise ValueError("Invalid voice chunk body length")
-                result = _camera_voice_chunk(self._read_json_body())
+                chunk_body = self._read_json_body()
+                touch_fn = getattr(camera_bridge, "touch_camera_activity", None)
+                if callable(touch_fn) and isinstance(chunk_body, dict):
+                    touch_fn(chunk_body.get("device_id"), self.client_address[0])
+                result = _camera_voice_chunk(chunk_body)
             except (ValueError, UnicodeError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
@@ -711,6 +718,9 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             camera_id = body.get("device_id") or (
                 "pocket3" if "Pocket 3" in str(body.get("camera", "")) else None
             )
+            touch_fn = getattr(camera_bridge, "touch_camera_activity", None)
+            if callable(touch_fn):
+                touch_fn(camera_id or "pocket4p", self.client_address[0])
             file_path = body.get("file_path") or body.get("video_path")
             media_url = body.get("media_url")
             transcript = body.get("transcript")
