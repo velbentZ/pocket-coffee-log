@@ -550,6 +550,21 @@ watch_mp4
         self.assertEqual(payloads[0]['media_url'], 'http://192.168.5.93:8088/DJI_001/new.MP4')
         self.assertEqual(Path(self.temp.name, 'last_mp4.txt').read_text().strip(), 'new.MP4')
 
+    def test_agent_watcher_resets_rec_and_fires_webhook_after_manual_camera_stop(self):
+        payloads = self.run_agent_functions(r"""
+exec 3>&1
+printf '%s\n' old.MP4 > "$BASE_DIR/last_mp4.txt"
+REC=true
+FAKE_NEW=/media/manual_stop.MP4; FAKE_SIZE=100; watch_mp4
+FAKE_SIZE=250; watch_mp4
+watch_mp4
+wait
+printf '{"rec":"%s"}\n' "$REC" >&3
+""")
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(payloads[0]['file_path'], '/media/manual_stop.MP4')
+        self.assertEqual(payloads[1]['rec'], 'false')
+
 
     def test_agent_does_not_block_capture_loop_on_media_webhook(self):
         payloads = self.run_agent_functions(r"""

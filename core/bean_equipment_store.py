@@ -162,6 +162,52 @@ class EquipmentProfile:
     single_camera_auto_switch: bool = True  # Automatically binds whichever camera (Pocket 3 or Pocket 4 Pro) is active
 
 
+ALLOWED_BEAN_KEYS = {
+    "bean_id",
+    "name",
+    "short_aliases",
+    "full_name",
+    "origin",
+    "process",
+    "roast_level",
+    "flavor_tags",
+    "recommended_grind",
+    "recommended_dose_g",
+    "recommended_ratio",
+    "golden_recipe_note",
+    "roast_date",
+    "expiry_date",
+    "initial_weight_g",
+    "remaining_weight_g",
+    "bag_status",
+    "brew_count",
+    "days_off_roast",
+    "freshness_stage",
+}
+
+
+def _safe_nonneg_float(val: Any, default: float, max_val: float = 100000.0) -> float:
+    if val is None or val == "" or isinstance(val, bool):
+        return default
+    try:
+        parsed = float(val)
+    except (TypeError, ValueError):
+        return default
+    if not (parsed == parsed and abs(parsed) != float("inf")):
+        return default
+    return round(max(0.0, min(max_val, parsed)), 2)
+
+
+def _safe_nonneg_int(val: Any, default: int = 0, max_val: int = 1000000) -> int:
+    if val is None or val == "" or isinstance(val, bool):
+        return default
+    try:
+        parsed = int(float(val))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(0, min(max_val, parsed))
+
+
 class BeanAndEquipmentManager:
     def __init__(self, data_dir: str) -> None:
         self.data_dir = data_dir
@@ -169,38 +215,70 @@ class BeanAndEquipmentManager:
         self._ensure_seeded()
 
     @staticmethod
+    def _sanitize_bean_id(raw_id: Any) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", str(raw_id or "").strip()).strip(".-_")[:64]
+        return cleaned or f"bean-{datetime.now().strftime('%H%M%S')}"
+
+    @staticmethod
     def _normalize_bean_dict(bean: Dict[str, Any]) -> Dict[str, Any]:
-        b = dict(bean)
+        if not isinstance(bean, dict):
+            raise ValueError("Bean entry must be a JSON object")
+        b = {k: v for k, v in bean.items() if k in ALLOWED_BEAN_KEYS}
+        b["bean_id"] = BeanAndEquipmentManager._sanitize_bean_id(b.get("bean_id"))
+
         aliases = b.get("short_aliases") or []
         if isinstance(aliases, str):
-            aliases = [x.strip() for x in aliases.split(",") if x.strip()]
-        b["short_aliases"] = aliases
+            aliases = [x.strip()[:64] for x in aliases.split(",") if x.strip()]
+        elif isinstance(aliases, list):
+            aliases = [str(x).strip()[:64] for x in aliases if str(x).strip()]
+        else:
+            aliases = []
+        b["short_aliases"] = aliases[:12]
 
         flavors = b.get("flavor_tags") or []
         if isinstance(flavors, str):
-            flavors = [x.strip() for x in flavors.split(",") if x.strip()]
-        b["flavor_tags"] = flavors
+            flavors = [x.strip()[:48] for x in flavors.split(",") if x.strip()]
+        elif isinstance(flavors, list):
+            flavors = [str(x).strip()[:48] for x in flavors if str(x).strip()]
+        else:
+            flavors = []
+        b["flavor_tags"] = flavors[:16]
 
-        full_name = (b.get("full_name") or b.get("name") or "未命名咖啡豆").strip()
+        full_name = str(b.get("full_name") or b.get("name") or "未命名咖啡豆").strip()[:200] or "未命名咖啡豆"
         b["full_name"] = full_name
-        b["name"] = (b.get("name") or (aliases[0] if aliases else full_name)).strip()
+        b["name"] = (str(b.get("name") or "").strip()[:120] or (aliases[0] if aliases else full_name)).strip()
+
+        for str_field, default_val, max_len in (
+            ("origin", "精品单品产区", 120),
+            ("process", "水洗 (Washed)", 120),
+            ("roast_level", "中浅烘焙", 64),
+            ("recommended_grind", "", 120),
+            ("recommended_ratio", "1:2.0", 32),
+            ("golden_recipe_note", "", 400),
+        ):
+            raw_s = b.get(str_field)
+            b[str_field] = (str(raw_s).strip()[:max_len] if raw_s is not None else default_val)
+
+        b["recommended_dose_g"] = _safe_nonneg_float(b.get("recommended_dose_g"), 18.0, max_val=500.0)
 
         raw_roast_date = b.get("roast_date") or DEFAULT_SEEDED_ROAST_DATES.get(str(b.get("bean_id", "")))
         normalized_roast_date = normalize_date_str(raw_roast_date) or (
             datetime.now().date() - timedelta(days=10)
         ).isoformat()
         b["roast_date"] = normalized_roast_date
+        if "expiry_date" in b:
+            b["expiry_date"] = normalize_date_str(b.get("expiry_date")) or ""
 
         rem_raw = b.get("remaining_weight_g")
-        remaining_g = round(max(0.0, float(rem_raw if rem_raw is not None else 200.0)), 2)
+        remaining_g = _safe_nonneg_float(rem_raw, 200.0, max_val=100000.0)
         init_raw = b.get("initial_weight_g")
-        initial_g = round(max(0.0, float(init_raw if init_raw is not None else max(250.0, remaining_g))), 2)
+        initial_g = _safe_nonneg_float(init_raw, max(250.0, remaining_g), max_val=100000.0)
         if init_raw is None and initial_g < remaining_g:
             initial_g = remaining_g
         b["initial_weight_g"] = initial_g
         b["remaining_weight_g"] = remaining_g
 
-        b["brew_count"] = max(0, int(b.get("brew_count") or 0))
+        b["brew_count"] = _safe_nonneg_int(b.get("brew_count"), 0)
         status = str(b.get("bag_status") or "").strip().lower()
         if status not in ("active", "frozen", "finished"):
             status = "finished" if remaining_g <= 0.0 else "active"
@@ -292,8 +370,23 @@ class BeanAndEquipmentManager:
                 "beans": default_beans,
                 "taste_feedback_history": [],
             }
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
+            self._atomic_write_json(payload)
+
+    def _atomic_write_json(self, data: Dict[str, Any]) -> None:
+        import tempfile
+        os.makedirs(self.data_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=".bean-lib-", dir=self.data_dir)
+        try:
+            os.chmod(tmp_path, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.file_path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def load_all(self) -> Dict[str, Any]:
         with open(self.file_path, "r", encoding="utf-8") as f:
@@ -304,8 +397,7 @@ class BeanAndEquipmentManager:
     def save_all(self, data: Dict[str, Any]) -> None:
         if "beans" in data and isinstance(data["beans"], list):
             data["beans"] = [self._normalize_bean_dict(b) for b in data["beans"]]
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        self._atomic_write_json(data)
 
     @staticmethod
     def _find_bean_index(beans: List[Dict[str, Any]], query: str) -> Optional[int]:
@@ -343,10 +435,12 @@ class BeanAndEquipmentManager:
         return beans[idx] if idx is not None else None
 
     def add_or_update_bean(self, bean_dict: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(bean_dict, dict):
+            raise ValueError("Bean payload must be a JSON object")
         data = self.load_all()
         beans = data.get("beans", [])
-        incoming = dict(bean_dict)
-        bean_id = incoming.get("bean_id") or f"bean-{datetime.now().strftime('%H%M%S')}"
+        incoming = {k: v for k, v in bean_dict.items() if k in ALLOWED_BEAN_KEYS}
+        bean_id = self._sanitize_bean_id(incoming.get("bean_id"))
         incoming["bean_id"] = bean_id
 
         replaced_entry: Optional[Dict[str, Any]] = None
@@ -362,6 +456,55 @@ class BeanAndEquipmentManager:
         data["beans"] = beans
         self.save_all(data)
         return replaced_entry
+
+    def update_equipment_from_intro(
+        self,
+        equipment_items: List[Dict[str, Any]],
+        grinder_type: Optional[str] = None,
+        grinder_model: Optional[str] = None,
+        espresso_machine: Optional[str] = None,
+        keyframes: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Merges recognized coffee machine, grinder, and bar accessories (tampers, WDT, dosing ring,
+        portafilter, filter paper, vacuum cleaner, cups) into the permanent equipment profile.
+        """
+        data = self.load_all()
+        eq = dict(data.get("equipment") or {})
+        if grinder_type:
+            eq["default_grinder_type"] = grinder_type
+            eq["grinder_type"] = grinder_type
+        if grinder_model:
+            eq["default_grinder_model"] = grinder_model
+            eq["grinder_model"] = grinder_model
+        if espresso_machine:
+            eq["espresso_machine"] = espresso_machine
+
+        existing_acc: List[Dict[str, Any]] = list(eq.get("accessories") or [])
+        by_id: Dict[str, Dict[str, Any]] = {
+            str(it.get("id") or it.get("name")): dict(it) for it in existing_acc if isinstance(it, dict)
+        }
+        kf_paths = [
+            kf.get("image_path")
+            for kf in (keyframes or [])
+            if isinstance(kf, dict) and kf.get("extracted") and kf.get("image_path")
+        ]
+        for idx, item in enumerate(equipment_items or []):
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("id") or item.get("name") or f"eq-{idx}")
+            merged = {**by_id.get(key, {}), **item}
+            if kf_paths and not merged.get("image_path"):
+                merged["image_path"] = kf_paths[min(idx // 2, len(kf_paths) - 1)]
+            by_id[key] = merged
+
+        eq["accessories"] = list(by_id.values())
+        if kf_paths:
+            eq["showcase_keyframes"] = kf_paths
+        eq["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        data["equipment"] = eq
+        self.save_all(data)
+        return eq
 
     def deduct_bean_dose(self, bean_id_or_name: str, dose_g: float) -> Optional[Dict[str, Any]]:
         """
@@ -403,7 +546,7 @@ class BeanAndEquipmentManager:
         or OCR text on a coffee bag (Brewlog / Filtru AI bag scanner style) and saves/updates
         it in the bean library.
         """
-        raw = (ocr_or_note_text or "").strip()
+        raw = (ocr_or_note_text or "").strip()[:10000]
         if not raw:
             default_card = {
                 "bean_id": f"bean-scan-{datetime.now().strftime('%H%M%S')}",
@@ -432,11 +575,11 @@ class BeanAndEquipmentManager:
         # 2. Bag weight (initial_weight_g & optional remaining_weight_g)
         weight_matches = [
             float(m.group(1))
-            for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:g|G|克|grams?)(?![a-zA-Z])", raw)
+            for m in re.finditer(r"(?<![0-9.])(\d{1,6}(?:\.\d{1,3})?)\s*(?:g|G|克|grams?)(?![a-zA-Z])", raw)
         ]
         bag_weights = [w for w in weight_matches if w >= 30.0]
         initial_weight_g = bag_weights[0] if bag_weights else (weight_matches[0] if weight_matches else 250.0)
-        rem_match = re.search(r"(?:剩余|余量)\s*(\d+(?:\.\d+)?)\s*(?:g|G|克)", raw)
+        rem_match = re.search(r"(?:剩余|余量)\s*(\d{1,6}(?:\.\d{1,3})?)\s*(?:g|G|克)", raw)
         remaining_weight_g = float(rem_match.group(1)) if rem_match else initial_weight_g
 
         # 3. Origin
@@ -490,9 +633,13 @@ class BeanAndEquipmentManager:
 
         # 7. Extract clean bean name & full_name
         cleaned = raw
-        cleaned = re.sub(r"烘焙(?:日期|时间)?\s*[:：]?\s*20\d{2}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}日?", " ", cleaned)
-        cleaned = re.sub(r"20\d{2}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}日?", " ", cleaned)
-        cleaned = re.sub(r"(?:净含量|豆重|克重|剩余|余量)?\s*\d+(?:\.\d+)?\s*(?:g|G|克|grams?)(?![a-zA-Z])", " ", cleaned)
+        cleaned = re.sub(r"烘焙(?:日期|时间)?\s{0,8}(?:[:：]\s{0,8})?20\d{2}\s{0,4}[-/.年]\s{0,4}\d{1,2}\s{0,4}[-/.月]\s{0,4}\d{1,2}日?", " ", cleaned)
+        cleaned = re.sub(r"20\d{2}\s{0,4}[-/.年]\s{0,4}\d{1,2}\s{0,4}[-/.月]\s{0,4}\d{1,2}日?", " ", cleaned)
+        cleaned = re.sub(
+            r"(?:(?:净含量|豆重|克重|剩余|余量)\s*)?(?<![0-9.])\d{1,6}(?:\.\d{1,3})?\s*(?:g|G|克|grams?)(?![a-zA-Z0-9])",
+            " ",
+            cleaned,
+        )
         cleaned = re.sub(r"(?:风味(?:描述|标签)?|产地|处理法|烘焙度?)\s*[:：]\s*[^\s,，;；\n]+", " ", cleaned)
         for note in sorted(FLAVOR_LEXICON, key=len, reverse=True):
             cleaned = cleaned.replace(note, " ")

@@ -73,6 +73,14 @@ class CoffeeRecord:
     timeline_events: List[Dict[str, Any]] = field(default_factory=list)
     keyframes: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Record classification & equipment profile items
+    record_type: str = "brew_report"  # "brew_report" | "equipment_profile"
+    equipment_items: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Decoupled source & media metadata (supports iPhone, iPad, Mac, DJI Pocket, Web upload, etc.)
+    source_type: str = "dji_pocket"  # "dji_pocket" | "iphone" | "ipad" | "web_upload" | "audio_note" | "manual_text"
+    media_kind: str = "video"        # "video" | "audio" | "text"
+
     # Status & missing info tracking
     missing_fields: List[Dict[str, str]] = field(default_factory=list)
     status: str = "complete"  # "complete" | "needs_info"
@@ -80,6 +88,11 @@ class CoffeeRecord:
 
     def compute_derived_metrics(self) -> None:
         """Compute brew ratio and check for missing fields."""
+        if self.record_type == "equipment_profile":
+            self.missing_fields = []
+            self.status = "complete"
+            return
+
         if self.bean_weight_g and self.yield_g and self.bean_weight_g > 0:
             ratio = round(self.yield_g / self.bean_weight_g, 2)
             self.brew_ratio = f"1:{ratio}"

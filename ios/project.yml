@@ -1,0 +1,59 @@
+name: PocketCoffeeApp
+options:
+  bundleIdPrefix: com.pocketcoffeelog
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+
+packages:
+  PocketCoffeeCore:
+    path: PocketCoffeeCore
+
+targets:
+  PocketCoffeeApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: PocketCoffeeApp
+    dependencies:
+      - package: PocketCoffeeCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.dji.velbent.PocketCoffeeLog
+        PRODUCT_NAME: PocketCoffeeApp
+        SWIFT_VERSION: "5.10"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        GENERATE_INFOPLIST_FILE: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    info:
+      path: PocketCoffeeApp/Info.plist
+      properties:
+        CFBundleDisplayName: Pocket Coffee
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: 用于拍摄咖啡制作过程或设备介绍视频，并在端侧离线识别参数。
+        NSMicrophoneUsageDescription: 用于录制咖啡制作口述笔记与设备介绍语音，全部在端侧离线转写。
+        NSSpeechRecognitionUsageDescription: 用于通过 Apple 端侧语音识别将口述录音离线转为中文冲煮参数与笔记。
+        NSPhotoLibraryUsageDescription: 用于从 iPhone 相册选择咖啡制作视频，并在端侧提取关键帧与识别参数。
+        NSPhotoLibraryAddUsageDescription: 用于将自动排版的 3:4 小红书精排海报、特写分镜卡及实况短视频一键保存到相册。
+        LSApplicationQueriesSchemes:
+          - xhsdiscover
+          - shortcuts
+        CFBundleURLTypes:
+          - CFBundleURLName: com.dji.velbent.PocketCoffeeLog
+            CFBundleURLSchemes:
+              - pocketcoffee
+        NSLocalNetworkUsageDescription: 可选：用于将生成的咖啡报告同步至局域网内的 Mac Pocket Coffee Log 中枢 (:8788)。
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
+          NSAllowsLocalNetworking: true

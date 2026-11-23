@@ -2,6 +2,8 @@
 
 import json
 import os
+import tempfile
+import threading
 from typing import Dict, List, Optional
 
 from core.analyzer import extract_parameters_from_transcript
@@ -12,6 +14,7 @@ class CoffeeStore:
     def __init__(self, data_dir: str):
         self.data_dir = data_dir
         self.records_path = os.path.join(data_dir, "coffee_records.json")
+        self._lock = threading.RLock()
         self._ensure_seeded()
 
     def _ensure_seeded(self) -> None:
@@ -67,15 +70,29 @@ class CoffeeStore:
         return [r1, r2, r3]
 
     def _load_raw(self) -> List[Dict]:
-        try:
-            with open(self.records_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return []
+        with self._lock:
+            try:
+                with open(self.records_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data if isinstance(data, list) else []
+            except Exception:
+                return []
 
     def _save_raw(self, items: List[Dict]) -> None:
-        with open(self.records_path, "w", encoding="utf-8") as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
+        with self._lock:
+            os.makedirs(self.data_dir, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix=".coffee-records-", dir=self.data_dir)
+            try:
+                os.chmod(tmp_path, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(items, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self.records_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
 
     def list_records(self) -> List[CoffeeRecord]:
         return [CoffeeRecord.from_dict(d) for d in self._load_raw()]
@@ -87,14 +104,15 @@ class CoffeeStore:
         return None
 
     def save_record(self, record: CoffeeRecord) -> CoffeeRecord:
-        items = self._load_raw()
-        replaced = False
-        for idx, item in enumerate(items):
-            if item.get("id") == record.id:
-                items[idx] = record.to_dict()
-                replaced = True
-                break
-        if not replaced:
-            items.insert(0, record.to_dict())
-        self._save_raw(items)
-        return record
+        with self._lock:
+            items = self._load_raw()
+            replaced = False
+            for idx, item in enumerate(items):
+                if item.get("id") == record.id:
+                    items[idx] = record.to_dict()
+                    replaced = True
+                    break
+            if not replaced:
+                items.insert(0, record.to_dict())
+            self._save_raw(items)
+            return record

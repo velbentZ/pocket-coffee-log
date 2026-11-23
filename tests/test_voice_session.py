@@ -195,6 +195,14 @@ class CameraVoiceTests(unittest.TestCase):
     def test_stop_when_only_camera_knows_it_is_recording(self):
         self.assertEqual(self.say("停止录象", True)["command"], "stop")
 
+    def test_re_wake_recovers_after_manual_stop_or_camera_reboot(self):
+        self.assertEqual(self.say("开始录制", False)["command"], "start")
+        # Camera rebooted or watch_mp4 reset REC=false -> recording_active=False:
+        self.assertEqual(self.say("开始录制", False)["command"], "start")
+        # Even if camera agent still sends recording_active=True after manual button stop >8s ago:
+        self.manager.active_session["started_at"] = "2020-01-01 00:00:00"
+        self.assertEqual(self.say("开始录制", True)["command"], "start")
+
     def test_remote_listing_orders_by_sequence(self):
         old = "DJI_20260813100000_0034_D.MP4"
         new = "DJI_20000104100000_0040_D.MP4"

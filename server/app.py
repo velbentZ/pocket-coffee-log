@@ -25,6 +25,8 @@ from array import array
 import base64
 import binascii
 import io
+import ipaddress
+import math
 import tempfile
 import time
 import wave
@@ -32,8 +34,8 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, urlparse
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, quote, urlparse
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -41,10 +43,18 @@ if PROJECT_ROOT not in sys.path:
 
 from core.analyzer import enrich_barista_analysis, extract_parameters_from_transcript
 from core.bean_equipment_store import BeanAndEquipmentManager
-from core.camera_sta_bridge import CameraInternalBridge
+from core.camera_sta_bridge import CameraInternalBridge, _is_safe_camera_http_url
 from core.context_engine import ProjectMemoryManager, SessionContextCompactor
+from core.media_upload import ALLOWED_MEDIA_EXTENSIONS, guess_media_mime, parse_multipart_upload
 from core.multimodal_vision import MultimodalVisionEngine
-from core.notifier import NotificationManager
+from core.notifier import (
+    NotificationManager,
+    REDACTED_SECRET_PLACEHOLDER,
+    SECRET_NOTIFICATION_KEYS,
+    redact_notification_config,
+    validate_notification_config,
+)
+from core.pipeline import CoffeeIngestionPipeline
 from core.registry import global_event_bus, global_registry
 from core.store import CoffeeStore
 from daemon.voice_session import VoiceWakeupSessionManager
@@ -67,11 +77,18 @@ camera_bridge = CameraInternalBridge(DATA_DIR)
 notifier = NotificationManager(DATA_DIR)
 bean_manager = BeanAndEquipmentManager(DATA_DIR)
 vision_engine = MultimodalVisionEngine(DATA_DIR)
-voice_manager = VoiceWakeupSessionManager(store, camera_bridge, notifier)
 memory_manager = ProjectMemoryManager(PROJECT_ROOT)
 compactor = SessionContextCompactor()
+ingestion_pipeline = CoffeeIngestionPipeline(store, vision_engine, bean_manager, notifier, compactor)
+voice_manager = VoiceWakeupSessionManager(store, camera_bridge, notifier)
 
-# Register core modules in global ModuleRegistry
+# Register decoupled core modules in global ModuleRegistry
+global_registry.register("capture_source", "dji_duml_sta", camera_bridge, {"models": ["Pocket 3", "Pocket 4 Pro"], "optional": True})
+global_registry.register("capture_source", "multi_device_upload", ingestion_pipeline, {"devices": ["iPhone", "iPad", "Mac", "Android", "Web"], "formats": ["video", "audio", "text"]})
+global_registry.register("recognition", "multimodal_vision_speech", vision_engine, {"audio_asr": True, "video_ocr_vlm": True, "vlm": vision_engine.vlm_provider})
+global_registry.register("report_generator", "coffee_ingestion_pipeline", ingestion_pipeline, {"record_types": ["brew_report", "equipment_profile"]})
+global_registry.register("bean_equipment", "bean_equipment_manager", bean_manager, {"inventory": True, "equipment_profile": True})
+# Legacy registry categories preserved for backwards compatibility
 global_registry.register("camera_driver", "dji_duml_sta", camera_bridge, {"models": ["Pocket 3", "Pocket 4 Pro"], "mode": "single_active_rotation"})
 global_registry.register("extractor", "multimodal_cn_regex", extract_parameters_from_transcript, {"lossless": True})
 global_registry.register("extractor", "whisper_vlm_keyframes", vision_engine, {"vlm": vision_engine.vlm_provider})
@@ -331,6 +348,249 @@ def _camera_voice_chunk(body):
     return {"ok": True, "transcript": transcript, "command": command, "action_token": f"ACTION:{command.upper()}"}
 
 
+MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
+ALLOWED_KEYFRAME_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+SUPPLEMENT_FLOAT_FIELDS = {"bean_weight_g", "yield_g", "extraction_time_s", "pressure_bar", "water_temp_c"}
+SUPPLEMENT_STRING_FIELDS = {
+    "bean_name",
+    "bean_roast",
+    "grind_setting",
+    "grinder_type",
+    "grinder_model",
+    "brew_method",
+}
+ALLOWED_TASTE_TAGS = {"balanced_sweet", "too_sour", "too_bitter", "watery"}
+ALLOWED_EQUIPMENT_FIELDS = {
+    "default_grinder_type",
+    "default_grinder_model",
+    "secondary_grinder_model",
+    "espresso_machine",
+    "default_water_temp_c",
+    "auto_fill_default_grinder",
+}
+ALLOWED_DIAGNOSTIC_SHELL_SNIPPETS = {
+    "id",
+    "uname -a",
+    "ps",
+    "iw dev",
+    "iw dev wlan0 info",
+    "ip -4 addr",
+    "ip -4 addr show wlan0",
+    "wpa_cli interfaces",
+    "wpa_cli -p /data/misc/wifi/sockets -i wlan0 status",
+    "ls -la /mnt/media_rw/emulated/DCIM/DJI_001",
+}
+
+
+class _RequestBodyError(ValueError):
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+def _is_local_or_lan_host(hostname: str) -> bool:
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    if host.endswith(".local"):
+        label = host[:-6]
+        if not label or len(label) > 63 or "." in label:
+            return False
+        return bool(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label))
+    try:
+        addr = ipaddress.ip_address(host)
+        if addr.is_loopback:
+            return True
+        if addr.is_unspecified or addr.is_link_local or addr.is_multicast or addr.is_reserved:
+            return False
+        return bool(addr.is_private)
+    except ValueError:
+        return False
+
+
+def _sanitize_source_device(raw: Any, fallback: str = "") -> str:
+    if raw is None:
+        return fallback
+    text = str(raw)[:256]
+    cleaned_chars: List[str] = []
+    for ch in text:
+        code = ord(ch)
+        if code < 0x20 or (0x7F <= code <= 0x9F):
+            if ch in ("\t", "\n", "\r"):
+                cleaned_chars.append(" ")
+            continue
+        if (0x200B <= code <= 0x200F) or (0x202A <= code <= 0x202E) or (0x2066 <= code <= 0x2069) or code == 0xFEFF:
+            continue
+        cleaned_chars.append(ch)
+    collapsed = " ".join("".join(cleaned_chars).split()).strip()
+    if not collapsed:
+        return fallback
+    if collapsed.startswith(("/", "~")) or ".." in collapsed or "://" in collapsed or "\\" in collapsed:
+        return fallback
+    if re.match(r"^[+-]\d{1,3}(?:\.\d+)?[+-]\d{1,3}(?:\.\d+)?", collapsed):
+        return fallback
+    return collapsed[:64].strip() or fallback
+
+
+def _sanitize_client_keyframes(raw_frames: Any, base_dir: str) -> List[Dict[str, Any]]:
+    if not isinstance(raw_frames, list):
+        return []
+    sanitized: List[Dict[str, Any]] = []
+    for item in raw_frames[:16]:
+        if not isinstance(item, dict):
+            continue
+        entry: Dict[str, Any] = {}
+        for str_key, max_len in (
+            ("id", 64),
+            ("stage_key", 64),
+            ("stage", 120),
+            ("preset_badge", 64),
+            ("visual_description", 400),
+        ):
+            val = item.get(str_key)
+            if isinstance(val, str) and val.strip():
+                entry[str_key] = val.strip()[:max_len]
+        for num_key, lo, hi in (("percentage", 0.0, 100.0), ("timestamp_s", 0.0, 86400.0), ("sharpness_score", 0.0, 100000.0)):
+            val = item.get(num_key)
+            if isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(float(val)):
+                clamped = max(lo, min(hi, float(val)))
+                entry[num_key] = int(round(clamped)) if num_key == "percentage" else round(clamped, 3)
+        raw_fields = item.get("detected_fields")
+        if isinstance(raw_fields, dict):
+            entry["detected_fields"] = {
+                str(k)[:48]: str(v)[:120]
+                for k, v in list(raw_fields.items())[:16]
+                if v is not None
+            }
+        raw_ocr = item.get("ocr_texts")
+        if isinstance(raw_ocr, list):
+            entry["ocr_texts"] = [
+                str(line).strip()[:400]
+                for line in raw_ocr[:120]
+                if isinstance(line, str) and line.strip()
+            ]
+        raw_img = item.get("image_path")
+        safe_img: Optional[str] = None
+        if isinstance(raw_img, str) and raw_img.strip():
+            safe_img = _resolve_confined_file(raw_img.strip(), base_dir, ALLOWED_KEYFRAME_EXTENSIONS)
+        entry["image_path"] = safe_img
+        entry["extracted"] = bool(item.get("extracted")) and bool(safe_img)
+        sanitized.append(entry)
+    return sanitized
+
+
+def _is_trusted_host_header(raw_host: str) -> bool:
+    header = (raw_host or "").strip()
+    if not header:
+        return True
+    if any(ch in header for ch in ("\r", "\n", "\x00", "/", "@")):
+        return False
+    parsed = urlparse(f"http://{header}")
+    host = parsed.hostname or ""
+    return _is_local_or_lan_host(host)
+
+
+def _allowed_cors_origin(raw_origin: str) -> Optional[str]:
+    origin = (raw_origin or "").strip()
+    if not origin or origin == "null" or any(ch in origin for ch in ("\r", "\n", "\x00")):
+        return None
+    parsed = urlparse(origin)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+        return None
+    if not _is_local_or_lan_host(parsed.hostname or ""):
+        return None
+    port_suffix = f":{parsed.port}" if parsed.port else ""
+    host_out = f"[{parsed.hostname}]" if (parsed.hostname and ":" in parsed.hostname) else (parsed.hostname or "")
+    return f"{parsed.scheme}://{host_out}{port_suffix}"
+
+
+def _resolve_confined_file(rel_or_abs: str, base_dir: str, allowed_extensions: set) -> Optional[str]:
+    raw = (rel_or_abs or "").strip()
+    if not raw or "\x00" in raw:
+        return None
+    segments = [seg for seg in raw.replace("\\", "/").split("/") if seg]
+    if any(seg == ".." for seg in segments):
+        return None
+    real_base = os.path.realpath(base_dir)
+    cand = os.path.realpath(raw)
+    if not (cand.startswith(real_base + os.sep) and os.path.isfile(cand)):
+        cand = os.path.realpath(os.path.join(real_base, raw.lstrip("/\\")))
+    if not cand.startswith(real_base + os.sep) or not os.path.isfile(cand):
+        return None
+    ext = os.path.splitext(cand)[1].lower()
+    if ext not in allowed_extensions:
+        return None
+    return cand
+
+
+def _validate_client_media_reference(
+    raw_ref: Any,
+    base_dir: str,
+    *,
+    allow_synthetic_camera_path: bool = False,
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    if raw_ref is None:
+        return True, None, None
+    if not isinstance(raw_ref, str):
+        return False, None, "Invalid media reference type"
+    raw = raw_ref.strip()
+    if not raw:
+        return True, None, None
+    if any(ch in raw for ch in ("\x00", "\r", "\n")):
+        return False, None, "Invalid control characters in media reference"
+    if raw.startswith(("/api/media/file?", "/api/media/keyframe?")):
+        return True, raw, None
+    if raw.startswith(("http://", "https://")) or "://" in raw:
+        if _is_safe_camera_http_url(raw):
+            return True, raw, None
+        return False, None, "Unsafe or non-LAN media URL"
+    segments = [seg for seg in raw.replace("\\", "/").split("/") if seg]
+    if any(seg == ".." for seg in segments):
+        return False, None, "Path traversal is not permitted"
+    if (
+        allow_synthetic_camera_path
+        and raw.startswith(("/mnt/media_rw/emulated/DCIM/", "/storage/sdcard0/DCIM/", "/camera/"))
+        and not os.path.exists(raw)
+    ):
+        return True, raw, None
+    real_base = os.path.realpath(base_dir)
+    cand = os.path.realpath(raw) if os.path.isabs(raw) else os.path.realpath(os.path.join(real_base, raw))
+    if not cand.startswith(real_base + os.sep):
+        return False, None, "Media path must reside inside the server data directory"
+    ext = os.path.splitext(cand)[1].lower()
+    if ext not in (ALLOWED_MEDIA_EXTENSIONS | ALLOWED_KEYFRAME_EXTENSIONS):
+        return False, None, "Unsupported media file extension"
+    return True, cand, None
+
+
+def _is_loopback_client(ip_str: str) -> bool:
+    raw = (ip_str or "").strip()
+    if raw in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+        return True
+    try:
+        return ipaddress.ip_address(raw).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_allowed_diagnostic_shell_cmd(cmd: Any) -> bool:
+    if not isinstance(cmd, str):
+        return False
+    stripped = cmd.strip()
+    if not stripped or len(stripped) > 256:
+        return False
+    if any(tok in stripped for tok in (";", "|", "`", "$(", ">", "<", "\n", "\r", "\x00")):
+        return False
+    parts = [p.strip() for p in stripped.split("&&")]
+    if not parts or len(parts) > 4:
+        return False
+    return all(part in ALLOWED_DIAGNOSTIC_SHELL_SNIPPETS for part in parts)
+
+
 class CoffeeRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC_DIR, **kwargs)
@@ -339,34 +599,77 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
         # Quiet standard stdout logging
         pass
 
+    def list_directory(self, path: str):
+        self.send_error(404, "Directory listing disabled")
+        return None
+
+    def end_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Referrer-Policy", "same-origin")
+        cors_origin = _allowed_cors_origin(self.headers.get("Origin", ""))
+        if cors_origin:
+            self.send_header("Access-Control-Allow-Origin", cors_origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        super().end_headers()
+
     def _send_json(self, payload: Dict[str, Any], status: int = 200) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(raw)
 
     def _read_json_body(self) -> Dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0:
-            return {}
-        raw = self.rfile.read(length).decode("utf-8")
+        raw_len = self.headers.get("Content-Length", "0")
         try:
-            return json.loads(raw)
-        except Exception:
+            length = int(raw_len)
+        except (TypeError, ValueError):
+            raise _RequestBodyError("Invalid Content-Length header", status=400)
+        if length < 0:
+            raise _RequestBodyError("Negative Content-Length is invalid", status=400)
+        if length == 0:
             return {}
+        if length > MAX_JSON_BODY_BYTES:
+            raise _RequestBodyError(f"JSON request body exceeds {MAX_JSON_BODY_BYTES} bytes", status=413)
+        try:
+            raw = self.rfile.read(length).decode("utf-8")
+            parsed_json = json.loads(raw)
+        except (UnicodeDecodeError, ValueError):
+            raise _RequestBodyError("Malformed UTF-8 or JSON request body", status=400)
+        if not isinstance(parsed_json, dict):
+            raise _RequestBodyError("JSON request body must be an object", status=400)
+        return parsed_json
 
     def do_OPTIONS(self) -> None:
+        if not _is_trusted_host_header(self.headers.get("Host", "")):
+            self._send_json({"ok": False, "error": "Untrusted Host header"}, status=403)
+            return
+        raw_origin = (self.headers.get("Origin") or "").strip()
+        if raw_origin and not _allowed_cors_origin(raw_origin):
+            self._send_json({"ok": False, "error": "Origin not allowed"}, status=403)
+            return
         self._send_json({"ok": True})
 
     def do_GET(self) -> None:
+        if not _is_trusted_host_header(self.headers.get("Host", "")):
+            self._send_json({"ok": False, "error": "Untrusted Host header"}, status=403)
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
+
+        if path == "/api/health":
+            self._send_json({"ok": True, "service": "pocket-coffee-log"})
+            return
+
+        if path == "/api/records":
+            records = [r.to_dict() for r in store.list_records()]
+            self._send_json({"ok": True, "records": records})
+            return
 
         if path == "/api/camera/sta":
             self._send_json(camera_bridge.sta_status())
@@ -456,7 +759,7 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 "bean_library": bean_manager.load_all(),
                 "on_camera_script": agent_script,
                 "notifications": notifier.get_history(),
-                "notification_config": notifier.load_config(),
+                "notification_config": redact_notification_config(notifier.load_config()),
                 "module_registry": global_registry.summary(),
                 "context_snapshot": memory_manager.build_current_snapshot(),
             })
@@ -475,25 +778,70 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/media/keyframe":
             rel_or_abs = (qs.get("path") or [""])[0].strip()
-            base_dir = os.path.realpath(vision_engine.data_dir)
-            target = ""
-            if rel_or_abs:
-                cand = os.path.realpath(rel_or_abs)
-                if not (cand.startswith(base_dir + os.sep) and os.path.isfile(cand)):
-                    cand = os.path.realpath(os.path.join(base_dir, rel_or_abs.lstrip("/")))
-                target = cand
-            if not target or not (target.startswith(base_dir + os.sep)) or not os.path.isfile(target):
+            target = _resolve_confined_file(rel_or_abs, vision_engine.data_dir, ALLOWED_KEYFRAME_EXTENSIONS)
+            if not target:
                 self._send_json({"ok": False, "error": "Keyframe image not found"}, status=404)
                 return
+            mime = guess_media_mime(target)
+            if not mime.startswith("image/"):
+                mime = "image/jpeg"
             with open(target, "rb") as img_f:
                 raw_img = img_f.read()
             self.send_response(200)
-            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(raw_img)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Cache-Control", "private, max-age=3600")
             self.end_headers()
             self.wfile.write(raw_img)
+            return
+
+        if path == "/api/media/file":
+            rel_or_abs = (qs.get("path") or [""])[0].strip()
+            target = _resolve_confined_file(rel_or_abs, store.data_dir, ALLOWED_MEDIA_EXTENSIONS)
+            if not target:
+                self._send_json({"ok": False, "error": "Media file not found"}, status=404)
+                return
+            file_size = os.path.getsize(target)
+            mime = guess_media_mime(target)
+            range_hdr = self.headers.get("Range")
+            start, end = 0, max(0, file_size - 1)
+            status_code = 200
+            if range_hdr and range_hdr.startswith("bytes="):
+                m = re.match(r"bytes=(\d*)-(\d*)", range_hdr.strip())
+                if m:
+                    s_str, e_str = m.group(1), m.group(2)
+                    if s_str:
+                        start = int(s_str)
+                        end = int(e_str) if e_str else file_size - 1
+                    elif e_str:
+                        suffix = int(e_str)
+                        start = max(0, file_size - suffix)
+                        end = file_size - 1
+                    end = min(end, file_size - 1)
+                    if start > end or start >= file_size:
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{file_size}")
+                        self.end_headers()
+                        return
+                    status_code = 206
+            length = max(0, end - start + 1) if file_size > 0 else 0
+            self.send_response(status_code)
+            self.send_header("Content-Type", mime)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(length))
+            if status_code == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self.end_headers()
+            with open(target, "rb") as media_f:
+                media_f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = media_f.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
             return
 
         if path == "/api/camera/script":
@@ -507,11 +855,96 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(raw)
             return
 
+        if path.startswith("/api/"):
+            self._send_json({"ok": False, "error": f"Unknown endpoint {path}"}, status=404)
+            return
+
+        segments = [seg for seg in path.split("/") if seg]
+        if any(seg in (".", "..") or seg.startswith(".") for seg in segments):
+            self.send_error(404, "File not found")
+            return
+
         return super().do_GET()
 
     def do_POST(self) -> None:
+        if not _is_trusted_host_header(self.headers.get("Host", "")):
+            self._send_json({"ok": False, "error": "Untrusted Host header"}, status=403)
+            return
+        raw_origin = (self.headers.get("Origin") or "").strip()
+        if raw_origin and not _allowed_cors_origin(raw_origin):
+            self._send_json({"ok": False, "error": "Origin not allowed"}, status=403)
+            return
         parsed = urlparse(self.path)
         path = parsed.path
+        if path in ("/api/ingest/upload", "/api/recognize/media") and "multipart/form-data" in (self.headers.get("Content-Type") or "").lower():
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                upload_dir = os.path.join(store.data_dir, "uploads")
+                fields, saved_file = parse_multipart_upload(
+                    self.rfile,
+                    self.headers.get("Content-Type", ""),
+                    content_length,
+                    upload_dir,
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+
+            if saved_file:
+                media_path = saved_file["path"]
+            else:
+                ok_mp, validated_mp, mp_err = _validate_client_media_reference(fields.get("media_path"), store.data_dir)
+                if not ok_mp:
+                    self._send_json({"ok": False, "error": mp_err}, status=403)
+                    return
+                media_path = validated_mp
+
+            rel_media = os.path.relpath(media_path, store.data_dir) if (media_path and os.path.isfile(media_path) and os.path.realpath(media_path).startswith(os.path.realpath(store.data_dir) + os.sep)) else ""
+            if rel_media:
+                media_url = f"/api/media/file?path={quote(rel_media)}"
+            else:
+                ok_mu, validated_mu, mu_err = _validate_client_media_reference(fields.get("media_url"), store.data_dir)
+                if not ok_mu:
+                    self._send_json({"ok": False, "error": mu_err}, status=403)
+                    return
+                media_url = validated_mu
+            source_type = _sanitize_source_device(fields.get("source_type"), "web_upload")
+            source_device = _sanitize_source_device(fields.get("source_device"), "")
+            record_intent = (fields.get("record_intent") or "auto").strip()[:32] or "auto"
+            transcript = (fields.get("transcript") or "").strip()[:20000]
+            mode = (fields.get("mode") or ("recognize_only" if path == "/api/recognize/media" else "ingest")).strip().lower()
+
+            if not media_path and not media_url and not transcript:
+                self._send_json({"ok": False, "error": "请上传视频/音频文件，或输入语音转写/文字描述"}, status=400)
+                return
+
+            pipeline = CoffeeIngestionPipeline(store, vision_engine, bean_manager, notifier, compactor)
+            if mode == "recognize_only":
+                rec_out = pipeline.recognize_media(
+                    media_path=media_path or media_url,
+                    spoken_transcript=transcript,
+                    source_device=source_device or source_type,
+                )
+                self._send_json({
+                    **rec_out,
+                    "uploaded_file": saved_file,
+                    "media_url": media_url,
+                    "source_type": source_type,
+                    "source_device": source_device,
+                })
+                return
+
+            res = pipeline.ingest_media(
+                media_path=media_path,
+                media_url=media_url,
+                transcript=transcript,
+                source_device=source_device,
+                source_type=source_type,
+                record_intent=record_intent,
+            )
+            self._send_json({**res, "uploaded_file": saved_file, "media_url": media_url})
+            return
+
         if path == "/api/camera/voice_chunk":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -522,12 +955,124 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 if callable(touch_fn) and isinstance(chunk_body, dict):
                     touch_fn(chunk_body.get("device_id"), self.client_address[0])
                 result = _camera_voice_chunk(chunk_body)
+            except _RequestBodyError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=exc.status)
+                return
             except (ValueError, UnicodeError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
             self._send_json(result)
             return
-        body = self._read_json_body()
+
+        try:
+            body = self._read_json_body()
+        except _RequestBodyError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=exc.status)
+            return
+
+        if path == "/api/ingest/process":
+            ok_mp, media_path, mp_err = _validate_client_media_reference(
+                body.get("media_path") or body.get("video_path"), store.data_dir
+            )
+            if not ok_mp:
+                self._send_json({"ok": False, "error": mp_err}, status=403)
+                return
+            ok_mu, media_url, mu_err = _validate_client_media_reference(body.get("media_url"), store.data_dir)
+            if not ok_mu:
+                self._send_json({"ok": False, "error": mu_err}, status=403)
+                return
+            transcript = str(body.get("transcript") or "").strip()[:20000]
+            default_src_type = "manual_text" if not (media_path or media_url) else "web_upload"
+            source_type = _sanitize_source_device(body.get("source_type"), default_src_type)
+            source_device = _sanitize_source_device(body.get("source_device"), "")
+            record_intent = str(body.get("record_intent") or "auto").strip()[:32] or "auto"
+            hint_overrides = body.get("hint_overrides") or body.get("visual_hints")
+            if not media_path and not media_url and not transcript:
+                self._send_json({"ok": False, "error": "需要提供 media_path、media_url 或 transcript 中至少一项"}, status=400)
+                return
+            if media_path and not media_url and os.path.isfile(media_path):
+                real_base = os.path.realpath(store.data_dir)
+                real_media = os.path.realpath(media_path)
+                if real_media.startswith(real_base + os.sep):
+                    media_url = f"/api/media/file?path={quote(os.path.relpath(real_media, real_base))}"
+            pipeline = CoffeeIngestionPipeline(store, vision_engine, bean_manager, notifier, compactor)
+            res = pipeline.ingest_media(
+                media_path=media_path,
+                media_url=media_url,
+                transcript=transcript,
+                source_device=source_device,
+                source_type=source_type,
+                record_intent=record_intent,
+                hint_overrides=hint_overrides,
+                save=bool(body.get("save", True)),
+                notify=bool(body.get("notify", True)),
+            )
+            self._send_json(res)
+            return
+
+        if path == "/api/recognize/media":
+            ok_mp, media_path, mp_err = _validate_client_media_reference(
+                body.get("media_path") or body.get("video_path"), store.data_dir
+            )
+            if not ok_mp:
+                self._send_json({"ok": False, "error": mp_err}, status=403)
+                return
+            transcript = str(body.get("transcript") or "").strip()[:20000]
+            source_device = _sanitize_source_device(body.get("source_device"), "通用录制设备")
+            hint_overrides = body.get("hint_overrides") or body.get("visual_hints")
+            if not media_path and not transcript:
+                self._send_json({"ok": False, "error": "请提供 media_path 或 transcript"}, status=400)
+                return
+            pipeline = CoffeeIngestionPipeline(store, vision_engine, bean_manager, notifier, compactor)
+            res = pipeline.recognize_media(
+                media_path=media_path,
+                spoken_transcript=transcript,
+                source_device=source_device,
+                hint_overrides=hint_overrides,
+            )
+            self._send_json(res)
+            return
+
+        if path == "/api/reports/generate":
+            transcript = str(body.get("transcript") or "").strip()[:20000]
+            visual_fields = body.get("visual_fields") or {}
+            if not transcript and not visual_fields:
+                self._send_json({"ok": False, "error": "请提供 transcript 或 visual_fields 以生成报告"}, status=400)
+                return
+            ok_vp, safe_video_path, vp_err = _validate_client_media_reference(
+                body.get("media_path") or body.get("video_path"),
+                store.data_dir,
+                allow_synthetic_camera_path=True,
+            )
+            if not ok_vp:
+                self._send_json({"ok": False, "error": vp_err}, status=403)
+                return
+            ok_mu, safe_media_url, mu_err = _validate_client_media_reference(body.get("media_url"), store.data_dir)
+            if not ok_mu:
+                self._send_json({"ok": False, "error": mu_err}, status=403)
+                return
+            safe_frames = _sanitize_client_keyframes(
+                body.get("frame_observations") or body.get("keyframes") or [],
+                store.data_dir,
+            )
+            pipeline = CoffeeIngestionPipeline(store, vision_engine, bean_manager, notifier, compactor)
+            res = pipeline.generate_report(
+                transcript=transcript,
+                source_device=_sanitize_source_device(body.get("source_device"), ""),
+                source_type=_sanitize_source_device(body.get("source_type"), "web_upload"),
+                media_kind=body.get("media_kind"),
+                video_path=safe_video_path,
+                media_url=safe_media_url,
+                visual_fields=visual_fields if isinstance(visual_fields, dict) else {},
+                frame_observations=safe_frames,
+                record_intent=str(body.get("record_intent") or "auto").strip()[:32] or "auto",
+                save=bool(body.get("save", True)),
+                notify=bool(body.get("notify", True)),
+            )
+            res.pop("record_obj", None)
+            res.pop("compacted_obj", None)
+            self._send_json(res)
+            return
 
         if path == "/api/camera/auto_recover":
             accepted = camera_bridge.request_auto_recovery()
@@ -558,10 +1103,20 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
         if path == "/api/voice/stop":
             transcript = body.get("transcript")
             cam_id = body.get("camera_id")
-            media_url = body.get("media_url")
-            video_path = body.get("video_path") or body.get("file_path")
+            ok_mu, media_url, mu_err = _validate_client_media_reference(body.get("media_url"), store.data_dir)
+            if not ok_mu:
+                self._send_json({"ok": False, "error": mu_err}, status=403)
+                return
+            ok_vp, video_path, vp_err = _validate_client_media_reference(
+                body.get("video_path") or body.get("file_path"),
+                store.data_dir,
+                allow_synthetic_camera_path=True,
+            )
+            if not ok_vp:
+                self._send_json({"ok": False, "error": vp_err}, status=403)
+                return
             hint_overrides = body.get("hint_overrides") or body.get("visual_hints")
-            reason = body.get("reason", "检测到咖啡制作结束，自动停止录制并生成报告")
+            reason = str(body.get("reason") or "检测到咖啡制作结束，自动停止录制并生成报告")[:200]
             result = voice_manager.stop_and_process(
                 reason=reason,
                 override_transcript=transcript,
@@ -574,14 +1129,14 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/records/supplement":
-            record_id = body.get("record_id", "")
+            record_id = str(body.get("record_id") or "")
             rec = store.get_record(record_id)
             if not rec:
                 self._send_json({"ok": False, "error": "未找到对应的咖啡记录"}, status=404)
                 return
 
             # Support both structured field updates and voice/text supplement
-            supplement_text = body.get("supplement_text", "").strip()
+            supplement_text = str(body.get("supplement_text") or "").strip()[:4000]
             if supplement_text:
                 rec.transcript = (rec.transcript + " 补充说明：" + supplement_text).strip()
                 parsed_supp = extract_parameters_from_transcript(supplement_text, rec.camera_device)
@@ -594,18 +1149,22 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                     if new_val is not None:
                         setattr(rec, field_name, new_val)
 
-            updates = body.get("updates", {})
-            float_fields = {"bean_weight_g", "yield_g", "extraction_time_s", "pressure_bar", "water_temp_c"}
+            updates = body.get("updates") or {}
+            if not isinstance(updates, dict):
+                self._send_json({"ok": False, "error": "updates must be a JSON object"}, status=400)
+                return
             for k, v in updates.items():
                 if v is None or v == "":
                     continue
-                if k in float_fields:
+                if k in SUPPLEMENT_FLOAT_FIELDS:
                     try:
-                        setattr(rec, k, float(v))
-                    except ValueError:
+                        fval = float(v)
+                        if math.isfinite(fval) and 0 < fval <= 100000:
+                            setattr(rec, k, fval)
+                    except (TypeError, ValueError):
                         pass
-                elif hasattr(rec, k):
-                    setattr(rec, k, str(v).strip())
+                elif k in SUPPLEMENT_STRING_FIELDS:
+                    setattr(rec, k, str(v).strip()[:200])
 
             rec.compute_derived_metrics()
             enrich_barista_analysis(rec)
@@ -626,13 +1185,26 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
                 lan_ip=body.get("lan_ip", "192.168.5.108"),
                 mac_server_ip=body.get("mac_server_ip", "192.168.5.84"),
             )
-            self._send_json(res)
+            self._send_json(res, status=400 if res.get("invalid_input") else 200)
             return
 
         if path == "/api/camera/exec":
+            if not _is_loopback_client(self.client_address[0]):
+                self._send_json(
+                    {"ok": False, "error": "ADB diagnostic commands are restricted to local loopback"},
+                    status=403,
+                )
+                return
+            shell_cmd = body.get("cmd", "iw dev wlan0 info && ps")
+            if not _is_allowed_diagnostic_shell_cmd(shell_cmd):
+                self._send_json(
+                    {"ok": False, "error": "Command rejected: only read-only diagnostic commands are permitted over HTTP"},
+                    status=403,
+                )
+                return
             res = camera_bridge.execute_internal_command(
                 device_id=body.get("device_id", "pocket4p"),
-                shell_cmd=body.get("cmd", "iw dev wlan0 info && ps"),
+                shell_cmd=shell_cmd,
             )
             self._send_json(res)
             return
@@ -721,8 +1293,18 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             touch_fn = getattr(camera_bridge, "touch_camera_activity", None)
             if callable(touch_fn):
                 touch_fn(camera_id or "pocket4p", self.client_address[0])
-            file_path = body.get("file_path") or body.get("video_path")
-            media_url = body.get("media_url")
+            ok_fp, file_path, fp_err = _validate_client_media_reference(
+                body.get("file_path") or body.get("video_path"),
+                store.data_dir,
+                allow_synthetic_camera_path=True,
+            )
+            if not ok_fp:
+                self._send_json({"ok": False, "error": fp_err}, status=403)
+                return
+            ok_mu, media_url, mu_err = _validate_client_media_reference(body.get("media_url"), store.data_dir)
+            if not ok_mu:
+                self._send_json({"ok": False, "error": mu_err}, status=403)
+                return
             transcript = body.get("transcript")
             hint_overrides = body.get("hint_overrides") or body.get("visual_hints")
             clip_name = os.path.basename(
@@ -741,7 +1323,7 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/beans/scan_label":
-            label_text = (body.get("text") or body.get("label_text") or "").strip()
+            label_text = str(body.get("text") or body.get("label_text") or "").strip()
             if not label_text:
                 self._send_json({"ok": False, "error": "豆袋标签或描述文本不能为空"}, status=400)
                 return
@@ -750,26 +1332,55 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/beans/save":
-            bean_entry = bean_manager.add_or_update_bean(body)
+            if not isinstance(body, dict):
+                self._send_json({"ok": False, "error": "Expected JSON object"}, status=400)
+                return
+            try:
+                bean_entry = bean_manager.add_or_update_bean(body)
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
             self._send_json({"ok": True, "bean": bean_entry, "bean_library": bean_manager.load_all()})
             return
 
         if path == "/api/equipment/save":
             lib_data = bean_manager.load_all()
-            lib_data["equipment"] = {**lib_data.get("equipment", {}), **body}
+            current_eq = dict(lib_data.get("equipment") or {})
+            for k in ALLOWED_EQUIPMENT_FIELDS:
+                if k not in body:
+                    continue
+                if k == "default_water_temp_c":
+                    try:
+                        temp = float(body[k])
+                        if math.isfinite(temp) and 0 < temp <= 110:
+                            current_eq[k] = temp
+                    except (TypeError, ValueError):
+                        pass
+                elif k == "auto_fill_default_grinder":
+                    current_eq[k] = bool(body[k])
+                else:
+                    current_eq[k] = str(body[k] or "").strip()[:200]
+            lib_data["equipment"] = current_eq
             bean_manager.save_all(lib_data)
             self._send_json({"ok": True, "equipment": lib_data["equipment"]})
             return
 
         if path == "/api/records/feedback":
-            record_id = body.get("record_id", "")
+            record_id = str(body.get("record_id") or "")
             rec = store.get_record(record_id)
             if not rec:
                 self._send_json({"ok": False, "error": "Record not found"}, status=404)
                 return
-            rating = int(body.get("rating", 5))
-            taste_tag = body.get("taste_tag", "balanced_sweet")
-            user_note = body.get("user_note", "")
+            try:
+                rating = max(1, min(5, int(body.get("rating", 5))))
+            except (TypeError, ValueError):
+                self._send_json({"ok": False, "error": "rating must be an integer between 1 and 5"}, status=400)
+                return
+            taste_tag = str(body.get("taste_tag") or "balanced_sweet").strip()
+            if taste_tag not in ALLOWED_TASTE_TAGS:
+                self._send_json({"ok": False, "error": "Invalid taste_tag"}, status=400)
+                return
+            user_note = str(body.get("user_note") or "")[:500]
             fb = bean_manager.apply_taste_feedback(rec.to_dict(), rating, taste_tag, user_note)
             # Prepend the subjective calibration advice directly into the record's suggestions
             rec.suggestions.insert(0, fb["calibration_advice"])
@@ -779,19 +1390,31 @@ class CoffeeRequestHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/notifications/config":
             cfg = notifier.load_config()
+            candidate = dict(cfg)
             for k in ["mobile_base_url", "wecom_webhook_url", "serverchan_sendkey", "bark_url", "feishu_webhook_url", "enable_macos_banner"]:
-                if k in body:
-                    cfg[k] = body[k]
-            notifier.save_config(cfg)
-            self._send_json({"ok": True, "config": cfg})
+                if k not in body:
+                    continue
+                if k == "enable_macos_banner":
+                    candidate[k] = bool(body[k])
+                elif k in SECRET_NOTIFICATION_KEYS and body[k] == REDACTED_SECRET_PLACEHOLDER:
+                    continue
+                else:
+                    candidate[k] = str(body[k] or "").strip()
+            validation_err = validate_notification_config(candidate)
+            if validation_err:
+                self._send_json({"ok": False, "error": validation_err}, status=400)
+                return
+            notifier.save_config(candidate)
+            self._send_json({"ok": True, "config": redact_notification_config(candidate)})
             return
 
         self._send_json({"ok": False, "error": f"Unknown endpoint {path}"}, status=404)
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8788) -> None:
-    server = ThreadingHTTPServer((host, port), CoffeeRequestHandler)
-    print(f"☕️ Pocket Coffee Log Server listening on http://{host}:{port}")
+def run_server(host: Optional[str] = None, port: int = 8788) -> None:
+    bind_host = host if host is not None else os.environ.get("HOST", "127.0.0.1")
+    server = ThreadingHTTPServer((bind_host, port), CoffeeRequestHandler)
+    print(f"☕️ Pocket Coffee Log Server listening on http://{bind_host}:{port}")
     camera_bridge.start_auto_recovery()
     try:
         server.serve_forever()

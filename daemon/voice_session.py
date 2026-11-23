@@ -14,13 +14,13 @@ from functools import wraps
 from urllib.parse import urlsplit
 from typing import Any, Dict, List, Optional
 
-from core.analyzer import enrich_barista_analysis, extract_parameters_from_transcript
 from core.bean_equipment_store import BeanAndEquipmentManager
 from core.camera_sta_bridge import CameraInternalBridge
 from core.context_engine import SessionContextCompactor
 from core.models import CoffeeRecord
 from core.multimodal_vision import MultimodalVisionEngine
 from core.notifier import NotificationManager
+from core.pipeline import CoffeeIngestionPipeline
 from core.registry import global_event_bus
 from core.store import CoffeeStore
 
@@ -59,6 +59,8 @@ STOP_KEYWORDS = [
     "暂停录制",
     "停止录像",
     "结束录像",
+    "关闭录制",
+    "关闭录像",
     "停止录",
     "结束录",
     "不录了",
@@ -69,7 +71,7 @@ STOP_KEYWORDS = [
     "拍好了",
 ]
 # Short stop commands match whole utterances so narration can still contain them.
-SHORT_STOP_KEYWORDS = ["停止", "结束", "暂停", "停下", "完成", "可以了", "好了"]
+SHORT_STOP_KEYWORDS = ["停止", "结束", "暂停", "停下", "完成", "可以了", "好了", "停录"]
 
 GIMBAL_STAGE_KEYWORDS = [
     ("scale_dose", ["称重", "称豆", "克豆"]),
@@ -85,7 +87,8 @@ def _normalize_command(text: str) -> str:
         ("录像", "录制"), ("录象", "录制"), ("录製", "录制"),
         ("錄製", "录制"), ("錄影", "录制"), ("錄像", "录制"),
         ("鹿制", "录制"), ("路制", "录制"), ("陆制", "录制"),
-        ("录质", "录制"), ("录音制", "录制"), ("制作咖非", "制作咖啡"),
+        ("录质", "录制"), ("录音制", "录制"), ("录子", "录制"),
+        ("复制", "录制"), ("制作咖非", "制作咖啡"),
         ("開始", "开始"), ("結束", "结束"), ("製作", "制作"),
     ):
         text = text.replace(variant, canonical)
@@ -209,6 +212,31 @@ class VoiceWakeupSessionManager:
                 and 0 <= (now - previous["at"]).total_seconds() <= 6.0):
             combined = previous["text"] + transcript
         self._last_camera_chunk = {"camera_id": camera_id, "text": transcript, "at": now}
+
+        # If the camera reports recording_active=False (e.g. after camera reboot or manual stop on camera)
+        # or if the user explicitly speaks a pure wake command (with no brewing parameters) >8s after start,
+        # allow wake words to re-trigger a new recording session instead of getting stuck in "recording".
+        wake_text = transcript if self.matches_wake_word(transcript) else combined
+        is_wake = self.matches_wake_word(wake_text)
+        elapsed_s = 0.0
+        if session.get("started_at"):
+            try:
+                elapsed_s = (now - datetime.fromisoformat(session["started_at"])).total_seconds()
+            except ValueError:
+                elapsed_s = 0.0
+        if is_wake and (
+            session["state"] == "standby_listening"
+            or not recording_active
+            or (
+                session["state"] in ("recording", "awaiting_media")
+                and elapsed_s >= 8.0
+                and not _has_meaningful_brewing_speech(transcript)
+            )
+        ):
+            self._last_camera_chunk = None
+            self.start_session(camera_id, initial_utterance=wake_text, trigger_source="camera_mic")
+            return "start"
+
         recording = session["state"] == "recording" or recording_active
         if recording and (self.matches_stop_word(transcript) or self.matches_stop_word(combined)):
             self._last_camera_chunk = None
@@ -222,12 +250,6 @@ class VoiceWakeupSessionManager:
                     session["transcript_chunks"].append(transcript)
             session.update(state="awaiting_media", camera_id=camera_id, last_event="等待相机完成视频文件")
             return "stop"
-        if session["state"] == "standby_listening" and not recording:
-            wake_text = transcript if self.matches_wake_word(transcript) else combined
-            if self.matches_wake_word(wake_text):
-                self._last_camera_chunk = None
-                self.start_session(camera_id, initial_utterance=wake_text, trigger_source="camera_mic")
-                return "start"
         if recording and session["state"] != "awaiting_media" and transcript:
             if session["state"] != "recording":
                 self.start_session(camera_id, initial_utterance="", trigger_source="camera_mic")
@@ -425,11 +447,11 @@ class VoiceWakeupSessionManager:
                      and sum(any(live_parameters.get(k) is not None for k in group)
                              for group in live_stages) >= 3)
         has_local = os.path.isfile(local_analysis_video_file)
-        if override_transcript is None and has_local and not rich_live:
+        if override_transcript is None and has_local:
             audio, speech_segments = self.vision_engine.extract_audio_and_transcribe_segments(
                 local_analysis_video_file
             )
-            if _has_meaningful_brewing_speech(audio) and _normalize_command(audio) not in _normalize_command(full_transcript):
+            if (_has_meaningful_brewing_speech(audio) or not rich_live) and audio and _normalize_command(audio) not in _normalize_command(full_transcript):
                 # Keep live utterances last so explicit live corrections still win.
                 utterances = [{"text": audio, "source": "camera_video_audio",
                                "timestamp": datetime.now().strftime("%H:%M:%S")}, *utterances]
@@ -446,9 +468,7 @@ class VoiceWakeupSessionManager:
 
             compacted = self.compactor.compact_utterances(sess_id, utterances, camera_device=model)
 
-        spoken_canonical = dict(compacted.canonical_parameters)
-
-        # 4. Run MultimodalVisionEngine keyframe inspection & match Personal Bean Library
+        # 4. Run MultimodalVisionEngine keyframe inspection & delegate report/equipment generation to CoffeeIngestionPipeline
         vision_analysis = self.vision_engine.analyze_video_keyframes(
             video_path=local_analysis_video_file if has_local else video_file,
             spoken_transcript=full_transcript,
@@ -458,61 +478,36 @@ class VoiceWakeupSessionManager:
             speech_segments=speech_segments,
         )
         visual_fields: Dict[str, Any] = dict(vision_analysis.get("visual_fields") or {})
-        visual_provenance = self.compactor.merge_visual_parameters(
-            compacted,
-            visual_fields,
-            evidence_source=video_file,
+
+        pipeline = CoffeeIngestionPipeline(
+            store=self.store,
+            vision_engine=self.vision_engine,
+            bean_manager=self.bean_manager,
+            notifier=self.notifier,
+            compactor=self.compactor,
         )
-
-        lib_data = self.bean_manager.load_all()
-        matched_bean = self.bean_manager.match_bean_by_text(full_transcript)
-        overrides: Dict[str, Any] = dict(visual_fields)
-        overrides.update(spoken_canonical)
-        if matched_bean:
-            overrides["_bean_library_match"] = matched_bean
-        if lib_data.get("equipment"):
-            overrides["_equipment_defaults"] = lib_data["equipment"]
-
-        # 5. Build CoffeeRecord from canonical parameters + VLM recovery + Bean Library + Equipment Defaults
-        record = extract_parameters_from_transcript(
+        pipeline_out = pipeline.generate_report(
             transcript=full_transcript,
-            camera_device=model,
+            source_device=model,
+            source_type="dji_pocket",
+            media_kind="video",
             video_path=video_file,
-            visual_Overrides=overrides,
+            media_url=resolved_media_url,
+            utterance_events=utterances,
+            visual_fields=visual_fields,
+            frame_observations=list(vision_analysis.get("frame_observations") or []),
+            session_id=sess_id,
+            record_intent="auto",
+            save=True,
+            notify=True,
+            has_meaningful_speech=_has_meaningful_brewing_speech(full_transcript),
         )
-        # Ensure canonical spoken values (e.g. from self-corrections) take precedence
-        for k, v in spoken_canonical.items():
-            if v is not None and hasattr(record, k):
-                setattr(record, k, v)
-        # Merge VLM-recovered fields for any parameter missing from speech
-        for k, prov in visual_provenance.items():
-            rec_val = prov.get("value")
-            if rec_val is not None and spoken_canonical.get(k) is None and hasattr(record, k):
-                setattr(record, k, rec_val)
-                if k == "grinder_model" and spoken_canonical.get("grinder_type") is None:
-                    if any(tok in str(rec_val) for tok in ("内置", "自带", "Breville", "铂富", "德龙")):
-                        record.grinder_type = "咖啡机自带磨豆机"
-                    elif not record.grinder_type:
-                        record.grinder_type = "额外独立磨豆机"
+        record = pipeline_out["record_obj"]
+        compacted = pipeline_out["compacted_obj"]
+        visual_provenance = pipeline_out["visual_provenance"]
+        bean_inventory = pipeline_out["bean_inventory"]
+        notif = pipeline_out["notification"]
 
-        if matched_bean and matched_bean.get("full_name"):
-            record.bean_name = matched_bean["full_name"]
-
-        record.keyframes = list(vision_analysis.get("frame_observations") or [])
-        record.media_url = resolved_media_url
-        record.compute_derived_metrics()
-        enrich_barista_analysis(record)
-        self.store.save_record(record)
-
-        # 5b. Auto-deduct consumed bean weight from Beanconqueror-style inventory
-        bean_inventory: Optional[Dict[str, Any]] = None
-        if record.bean_weight_g is not None and float(record.bean_weight_g) > 0 and record.bean_name:
-            bean_inventory = self.bean_manager.deduct_bean_dose(
-                record.bean_name, float(record.bean_weight_g)
-            )
-
-        # 6. Dispatch mobile push notification
-        notif = self.notifier.notify_brew_record(record)
         global_event_bus.publish("session.completed", {"record_id": record.id, "compacted": compacted.to_dict()})
 
         # 7. Reset session back to standby listening

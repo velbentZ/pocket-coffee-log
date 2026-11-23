@@ -48,6 +48,7 @@ func recognize(_ image: CGImage) -> [String] {
 }
 
 let arguments = CommandLine.arguments
+guard arguments.count >= 2 else { exit(2) }
 if arguments[1] == "ocr" {
     var output: [String: [String]] = [:]
     for path in arguments.dropFirst(2) {
@@ -60,6 +61,7 @@ if arguments[1] == "ocr" {
     exit(0)
 }
 
+guard arguments.count >= 3 else { exit(2) }
 let asset = AVURLAsset(url: URL(fileURLWithPath: arguments[2]))
 let duration = CMTimeGetSeconds(asset.duration)
 guard duration.isFinite, duration > 0, let track = asset.tracks(withMediaType: .video).first else { exit(2) }
@@ -71,11 +73,12 @@ if arguments[1] == "probe" {
     exit(0)
 }
 
+guard arguments.count >= 5 else { exit(2) }
 let directory = URL(fileURLWithPath: arguments[3], isDirectory: true)
 let plan = try JSONDecoder().decode([String: [Double]].self, from: Data(arguments[4].utf8))
 let generator = AVAssetImageGenerator(asset: asset)
 generator.appliesPreferredTrackTransform = true
-generator.maximumSize = CGSize(width: 640, height: 640)
+generator.maximumSize = CGSize(width: 1280, height: 1280)
 generator.requestedTimeToleranceBefore = CMTime(seconds: 0.08, preferredTimescale: 600)
 generator.requestedTimeToleranceAfter = CMTime(seconds: 0.08, preferredTimescale: 600)
 

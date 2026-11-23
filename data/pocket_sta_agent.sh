@@ -126,7 +126,8 @@ ensure_sta() {
         fi
         if [ "$WPA_FAILS" -ge 2 ]; then
             log "Restarting stale STA supplicant with the Pocket Wi-Fi config"
-            "$BB" killall wpa_supplicant 2>/dev/null
+            "$BB" killall hostapd dnsmasq wpa_supplicant 2>/dev/null
+            ip addr flush dev wlan0 2>/dev/null
             rm -rf /tmp/wpa_supplicant /data/misc/wifi/sockets
         elif [ -n "$WPA_DIR" ] || "$BB" pidof wpa_supplicant >/dev/null 2>&1; then
             return 1
@@ -147,7 +148,7 @@ ensure_sta() {
     [ -n "$CURRENT_IP" ]
 }
 
-json_escape() { printf '%s' "$1" | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'; }
+json_escape() { printf '%s' "$1" | "$BB" tr -d '\r\n' | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'; }
 newest_mp4() {
     "$BB" ls -1t "$DCIM_DIR"/DJI_001/*.MP4 2>/dev/null |
         "$BB" awk '{
@@ -239,7 +240,6 @@ upload_mp4_webhook() {
 }
 
 watch_mp4() {
-    [ "$REC" != true ] || return
     if [ -n "$WEBHOOK_PID" ]; then
         kill -0 "$WEBHOOK_PID" 2>/dev/null && return
         wait "$WEBHOOK_PID"
@@ -253,6 +253,10 @@ watch_mp4() {
     NEW_SIZE=$("$BB" stat -c %s "$NEW_MP4" 2>/dev/null)
     [ -n "$NEW_SIZE" ] && [ "$NEW_SIZE" -gt 0 ] || return
     if [ "$PENDING_MP4" = "$NEW_MP4" ] && [ "$PENDING_SIZE" = "$NEW_SIZE" ]; then
+        if [ "$REC" = true ]; then
+            REC=false
+            log "watch_mp4: recording stopped on camera ($NEW_MP4_BASENAME finalized at $NEW_SIZE bytes)"
+        fi
         # Report generation can take longer than a capture window.
         if [ "${RUN_ONCE:-0}" = 1 ]; then
             upload_mp4_webhook
@@ -351,8 +355,8 @@ while true; do
     ensure_adbd
     if ensure_sta; then
         read_shutter_marker
-        heartbeat
         [ "$CAPTURE_OK" = 1 ] && poll_voice_chunk "$CUR_WAV"
+        heartbeat &
         watch_mp4
     else
         sleep 3

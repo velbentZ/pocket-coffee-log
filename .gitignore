@@ -5,3 +5,11 @@ __pycache__/
 .env
 /data/media_cache/*.[mM][pP]4
 /data/keyframes/
+/data/eval_fixtures/
+/ios/.build-device/
+/ios/.build-sim/
+/ios/PocketCoffeeCore/.build/
+/ios/PocketCoffeeCore/.swiftpm/
+*.xcuserdata
+xcuserdata/
+DerivedData/

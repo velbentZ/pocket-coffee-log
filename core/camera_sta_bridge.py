@@ -20,13 +20,57 @@ import threading
 import time
 import tempfile
 from email.utils import parsedate_to_datetime
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 from typing import Any, Dict, List, Optional, Tuple
 from urllib import request as urllib_request
 from urllib.error import URLError
 
 for _proxy_var in ("NO_PROXY", "no_proxy"):
     os.environ[_proxy_var] = "*"
+
+MAX_CAMERA_PULL_BYTES = 500 * 1024 * 1024
+
+
+def _is_valid_lan_ipv4(ip_str: Any) -> bool:
+    if not isinstance(ip_str, str) or not ip_str.strip():
+        return False
+    try:
+        addr = ipaddress.IPv4Address(ip_str.strip())
+    except ValueError:
+        return False
+    if (
+        addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_unspecified
+        or str(addr) == "255.255.255.255"
+    ):
+        return False
+    return addr.is_private
+
+
+def _is_safe_camera_http_url(url: Any) -> bool:
+    if not isinstance(url, str) or not url.strip():
+        return False
+    if any(ch in url for ch in ("\r", "\n", "\x00")):
+        return False
+    parsed = urlsplit(url.strip())
+    if parsed.scheme != "http" or parsed.username or parsed.password or parsed.fragment:
+        return False
+    host = (parsed.hostname or "").strip()
+    if not host:
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if port is not None and not (1 <= port <= 65535):
+        return False
+    if _is_valid_lan_ipv4(host):
+        return True
+    if host.lower() != "localhost" and re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,31}", host):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +376,8 @@ ensure_sta() {
         fi
         if [ "$WPA_FAILS" -ge 2 ]; then
             log "Restarting stale STA supplicant with the Pocket Wi-Fi config"
-            "$BB" killall wpa_supplicant 2>/dev/null
+            "$BB" killall hostapd dnsmasq wpa_supplicant 2>/dev/null
+            ip addr flush dev wlan0 2>/dev/null
             rm -rf /tmp/wpa_supplicant /data/misc/wifi/sockets
         elif [ -n "$WPA_DIR" ] || "$BB" pidof wpa_supplicant >/dev/null 2>&1; then
             return 1
@@ -353,7 +398,7 @@ ensure_sta() {
     [ -n "$CURRENT_IP" ]
 }
 
-json_escape() { printf '%s' "$1" | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'; }
+json_escape() { printf '%s' "$1" | "$BB" tr -d '\r\n' | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'; }
 newest_mp4() {
     "$BB" ls -1t "$DCIM_DIR"/DJI_001/*.MP4 2>/dev/null |
         "$BB" awk '{
@@ -445,7 +490,6 @@ upload_mp4_webhook() {
 }
 
 watch_mp4() {
-    [ "$REC" != true ] || return
     if [ -n "$WEBHOOK_PID" ]; then
         kill -0 "$WEBHOOK_PID" 2>/dev/null && return
         wait "$WEBHOOK_PID"
@@ -459,6 +503,10 @@ watch_mp4() {
     NEW_SIZE=$("$BB" stat -c %s "$NEW_MP4" 2>/dev/null)
     [ -n "$NEW_SIZE" ] && [ "$NEW_SIZE" -gt 0 ] || return
     if [ "$PENDING_MP4" = "$NEW_MP4" ] && [ "$PENDING_SIZE" = "$NEW_SIZE" ]; then
+        if [ "$REC" = true ]; then
+            REC=false
+            log "watch_mp4: recording stopped on camera ($NEW_MP4_BASENAME finalized at $NEW_SIZE bytes)"
+        fi
         # Report generation can take longer than a capture window.
         if [ "${RUN_ONCE:-0}" = 1 ]; then
             upload_mp4_webhook
@@ -557,8 +605,8 @@ while true; do
     ensure_adbd
     if ensure_sta; then
         read_shutter_marker
-        heartbeat
         [ "$CAPTURE_OK" = 1 ] && poll_voice_chunk "$CUR_WAV"
+        heartbeat &
         watch_mp4
     else
         sleep 3
@@ -643,6 +691,7 @@ class CameraInternalBridge:
             }
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(default_cfg, f, ensure_ascii=False, indent=2)
+            os.chmod(self.config_path, 0o600)
 
     def load_state(self) -> Dict[str, Any]:
         with self._state_lock:
@@ -654,6 +703,7 @@ class CameraInternalBridge:
         with self._state_lock:
             fd, temporary = tempfile.mkstemp(prefix=".camera-sta-", dir=self.data_dir)
             try:
+                os.chmod(temporary, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(state, f, ensure_ascii=False, indent=2)
                 os.replace(temporary, self.config_path)
@@ -704,13 +754,31 @@ class CameraInternalBridge:
             now = datetime.now().astimezone().isoformat()
             camera = state["cameras"][device_id]
             verified = source_ip == str(address)
+            safe_ssid = re.sub(r"[\r\n\x00]", "", str(payload.get("ssid", "")))[:64]
+            safe_agent_ver = re.sub(r"[\r\n\x00]", "", str(payload.get("agent_version", "")))[:64]
             camera.update(lan_ip=str(address), mac_address=mac.lower(),
-                          ssid=str(payload.get("ssid", "")), wifi_mode="STA" if verified else "unverified",
+                          ssid=safe_ssid, wifi_mode="STA" if verified else "unverified",
                           last_heartbeat=now, internal_daemon_installed=True,
-                          internal_daemon_version=str(payload.get("agent_version", "")))
-            for key in ("sd_free_gb", "latest_media_file", "latest_media_url"):
-                if key in payload:
-                    camera[key] = payload[key]
+                          internal_daemon_version=safe_agent_ver)
+            if "sd_free_gb" in payload:
+                sd_val = payload["sd_free_gb"]
+                if sd_val is None:
+                    camera["sd_free_gb"] = None
+                elif type(sd_val) in (int, float) and math.isfinite(float(sd_val)) and 0.0 <= float(sd_val) <= 65536.0:
+                    camera["sd_free_gb"] = round(float(sd_val), 3)
+            if "latest_media_file" in payload:
+                raw_mf = str(payload.get("latest_media_file") or "").strip()
+                base_mf = os.path.basename(raw_mf)
+                if not raw_mf:
+                    camera["latest_media_file"] = ""
+                elif base_mf == raw_mf and re.fullmatch(r"[A-Za-z0-9_. -]{1,128}", base_mf):
+                    camera["latest_media_file"] = base_mf
+            if "latest_media_url" in payload:
+                raw_mu = str(payload.get("latest_media_url") or "").strip()
+                if not raw_mu:
+                    camera["latest_media_url"] = ""
+                elif _is_safe_camera_http_url(raw_mu):
+                    camera["latest_media_url"] = raw_mu
             if verified:
                 battery = payload.get("battery_percent")
                 if "battery_percent" in payload and (
@@ -853,6 +921,13 @@ class CameraInternalBridge:
             80: "web_api",
         }
         open_services = {}
+        if not _is_valid_lan_ipv4(ip):
+            return {
+                "ip": str(ip),
+                "reachable": False,
+                "services": {name: False for name in ports_to_check.values()},
+                "error": "Target IP must be a private RFC1918 LAN IPv4 address",
+            }
         for port, name in ports_to_check.items():
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(timeout)
@@ -883,7 +958,20 @@ class CameraInternalBridge:
         2. Attempts UDP delivery if camera AP (192.168.2.1) or existing LAN IP is reachable
         3. Updates persistent configuration and returns the exact packet + ADB deployment status
         """
+        if not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", device_id):
+            return {"ok": False, "error": "Invalid camera device_id", "invalid_input": True}
+        if not isinstance(ssid, str) or not ssid.strip() or len(ssid) > 64 or any(c in ssid for c in ("\r", "\n", "\x00")):
+            return {"ok": False, "error": "Invalid Wi-Fi SSID", "invalid_input": True}
+        if not isinstance(password, str) or len(password) > 128 or any(c in password for c in ("\r", "\n", "\x00")):
+            return {"ok": False, "error": "Invalid Wi-Fi password", "invalid_input": True}
+        if not _is_valid_lan_ipv4(lan_ip):
+            return {"ok": False, "error": "lan_ip must be a private RFC1918 IPv4 address", "invalid_input": True}
+        if mac_server_ip != "127.0.0.1" and not _is_valid_lan_ipv4(mac_server_ip):
+            return {"ok": False, "error": "mac_server_ip must be a private RFC1918 IPv4 address", "invalid_input": True}
+
         state = self.load_state()
+        if device_id not in state.get("cameras", {}):
+            return {"ok": False, "error": f"Unknown camera device_id: {device_id}", "invalid_input": True}
         state["sta_network"]["ssid"] = ssid
         state["sta_network"]["password"] = "********" if not password else password
         state["sta_network"]["mac_server_ip"] = mac_server_ip
@@ -997,7 +1085,22 @@ class CameraInternalBridge:
 
     @staticmethod
     def _resolve_adb_binary(settings: Dict[str, Any]) -> str:
-        binary = os.environ.get("POCKET_ADB", settings.get("binary", "adb"))
+        env_bin = os.environ.get("POCKET_ADB")
+        if env_bin:
+            return env_bin
+        cfg_bin = settings.get("binary", "adb")
+        if not isinstance(cfg_bin, str) or not cfg_bin.strip():
+            binary = "adb"
+        elif cfg_bin == "adb":
+            binary = "adb"
+        elif (
+            os.path.isabs(cfg_bin)
+            and ".." not in cfg_bin
+            and re.fullmatch(r"adb[A-Za-z0-9._-]*", os.path.basename(cfg_bin))
+        ):
+            binary = cfg_bin
+        else:
+            binary = "adb"
         if binary == "adb" and shutil.which("adb") is None:
             for candidate in ("/opt/homebrew/bin/adb", "/usr/local/bin/adb"):
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
@@ -1110,6 +1213,20 @@ class CameraInternalBridge:
                 continue
         return False
 
+    def _poll_lan_agent_after_ble(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        lan = self.ensure_sta_agent_over_lan(state)
+        if lan["status"] != "lan_adb_unavailable":
+            return lan
+        # Only poll when running in the background watcher thread (not during synchronous unit tests)
+        if threading.current_thread().name == "camera-auto-recovery":
+            for _ in range(5):
+                if self._recovery_stop.wait(2.0):
+                    break
+                lan = self.ensure_sta_agent_over_lan(state)
+                if lan["status"] != "lan_adb_unavailable":
+                    return lan
+        return lan
+
     def recover_camera_once(self, *, now=None) -> Dict[str, Any]:
         """Check one transport at a time, keeping the HTTP server responsive."""
         from daemon.camera_auto_recovery import BLERecoveryError, provision_over_ble
@@ -1149,14 +1266,14 @@ class CameraInternalBridge:
                         # leaves the camera associated on the home LAN. The heartbeat
                         # over LAN ADB, not the BLE ACK, is the recovery criterion.
                         if str(error) in ("ble_sta_join_rejected", "ble_sta_join_timeout"):
-                            self._next_ble_attempt = time.monotonic() + 60
-                            lan = self.ensure_sta_agent_over_lan(state)
+                            self._next_ble_attempt = time.monotonic() + 20
+                            lan = self._poll_lan_agent_after_ble(state)
                             result["status"] = ("waiting_for_lan" if lan["status"] == "lan_adb_unavailable"
                                                 else lan["status"])
                     else:
                         self._recovery_last_ble = {"status": result["ble_status"], "checked_at": now.isoformat()}
-                        self._next_ble_attempt = time.monotonic() + 60
-                        lan = self.ensure_sta_agent_over_lan(state)
+                        self._next_ble_attempt = time.monotonic() + 20
+                        lan = self._poll_lan_agent_after_ble(state)
                         result["status"] = ("waiting_for_lan" if lan["status"] == "lan_adb_unavailable"
                                             else lan["status"])
             self._recovery_last = result
@@ -1262,16 +1379,28 @@ class CameraInternalBridge:
                 fields = line.split()
                 if len(fields) >= 2 and fields[1] in ("device", "offline", "unauthorized", "recovery", "sideload"):
                     devices[fields[0]] = fields[1]
-            serial = cam.get("adb_serial")
+            raw_serial = cam.get("adb_serial")
+            serial = (
+                raw_serial
+                if isinstance(raw_serial, str)
+                and not raw_serial.startswith("-")
+                and re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", raw_serial)
+                else None
+            )
             # Never pick an arbitrary attached phone or use product name as USB serial.
             candidates = [serial] if serial else []
             adb_port = int(cam.get("adb_port", 5555))
-            tcp_ips = list(dict.fromkeys(filter(None, [
-                cam.get("lan_ip"),
-                cam.get("verification", {}).get("verified_sta_ip"),
-                state.get("auto_recovery", {}).get("lan_ip"),
-                *(state.get("auto_recovery", {}).get("lan_ips") or []),
-            ])))
+            if not 1 <= adb_port <= 65535:
+                raise ValueError("Invalid camera ADB TCP port")
+            tcp_ips = [
+                ip for ip in dict.fromkeys(filter(None, [
+                    cam.get("lan_ip"),
+                    cam.get("verification", {}).get("verified_sta_ip"),
+                    state.get("auto_recovery", {}).get("lan_ip"),
+                    *(state.get("auto_recovery", {}).get("lan_ips") or []),
+                ]))
+                if _is_valid_lan_ipv4(ip)
+            ]
             for ip in tcp_ips:
                 candidates.append(f"{ip}:{adb_port}")
             for target in candidates:
@@ -1309,6 +1438,9 @@ class CameraInternalBridge:
 
     def execute_internal_command(self, device_id: str, shell_cmd: str) -> Dict[str, Any]:
         """Execute on a confirmed USB or TCP ADB transport; never emulate output."""
+        if not isinstance(shell_cmd, str) or not shell_cmd.strip() or "\x00" in shell_cmd:
+            return {"ok": False, "device_id": device_id, "error": "Invalid ADB shell command",
+                    "live_socket_connected": False}
         transport = self.adb_transport(device_id)
         if not transport["ok"]:
             return {**transport, "device_id": device_id, "live_socket_connected": False}
@@ -1330,6 +1462,8 @@ class CameraInternalBridge:
         if not camera or not camera.get("lan_ip"):
             return {"ok": False, "error": "Camera has no configured LAN address", "files": []}
         base_url = f"http://{camera['lan_ip']}:{camera.get('http_media_port', 8088)}/DJI_001/"
+        if not _is_safe_camera_http_url(base_url):
+            return {"ok": False, "error": "Unsafe or non-LAN camera HTTP media address", "files": []}
         files = []
         http_error = ""
         try:
@@ -1402,6 +1536,8 @@ class CameraInternalBridge:
         """Download the newest, an exact listed filename, or the smallest nonempty MP4."""
         if max_bytes is not None and (isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0):
             return {"ok": False, "error": "max_bytes must be a positive integer"}
+        if max_bytes is not None and max_bytes > MAX_CAMERA_PULL_BYTES:
+            return {"ok": False, "error": f"max_bytes exceeds limit ({MAX_CAMERA_PULL_BYTES} bytes)"}
         if filename is not None and prefer_smallest:
             return {"ok": False, "error": "Choose either filename or prefer_smallest"}
         listing = self.list_remote_media(device_id)
@@ -1419,25 +1555,38 @@ class CameraInternalBridge:
                 return {"ok": False, "error": "No nonempty MP4 files found"}
         else:
             media = files[0]
+        if not _is_safe_camera_http_url(media.get("url", "")):
+            return {"ok": False, "error": "Unsafe camera media URL"}
+        if media.get("size_bytes", 0) > MAX_CAMERA_PULL_BYTES and (max_bytes is None or max_bytes > MAX_CAMERA_PULL_BYTES):
+            return {"ok": False, "error": f"Remote MP4 exceeds {MAX_CAMERA_PULL_BYTES} byte pull limit"}
         partial = max_bytes is not None and max_bytes < media["size_bytes"]
         name = os.path.basename(media["name"])
+        if not name or name.startswith(".") or ".." in name or not re.fullmatch(r"[A-Za-z0-9_. -]+\.MP4", name, re.I):
+            return {"ok": False, "error": "Unsafe remote media filename"}
         if partial:
             name = os.path.splitext(name)[0] + f".preview-{max_bytes}.MP4"
         destination = dest_dir or os.path.join(self.data_dir, "media_cache")
         temporary = None
         try:
             os.makedirs(destination, exist_ok=True)
-            local_path = os.path.abspath(os.path.join(destination, name))
+            real_dest = os.path.realpath(destination)
+            local_path = os.path.abspath(os.path.join(real_dest, name))
+            if not os.path.realpath(local_path).startswith(real_dest + os.sep):
+                raise ValueError("Destination path escaped media_cache directory")
             headers = {"Range": f"bytes=0-{max_bytes - 1}"} if max_bytes else {}
             req = urllib_request.Request(media["url"], headers=headers)
             received = 0
+            hard_cap = min(max_bytes, MAX_CAMERA_PULL_BYTES) if max_bytes else MAX_CAMERA_PULL_BYTES
             with urllib_request.urlopen(req, timeout=30) as response:
-                with tempfile.NamedTemporaryFile(dir=destination, delete=False) as output:
+                with tempfile.NamedTemporaryFile(dir=real_dest, delete=False) as output:
                     temporary = output.name
+                    os.chmod(temporary, 0o600)
                     while max_bytes is None or received < max_bytes:
                         chunk = response.read(min(1024 * 1024, max_bytes - received) if max_bytes else 1024 * 1024)
                         if not chunk:
                             break
+                        if received + len(chunk) > hard_cap:
+                            raise ValueError("Remote media stream exceeded maximum allowed size")
                         output.write(chunk)
                         received += len(chunk)
             expected = min(max_bytes, media["size_bytes"]) if max_bytes else media["size_bytes"]
