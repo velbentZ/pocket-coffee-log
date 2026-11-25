@@ -395,6 +395,42 @@ final class AnalyzerAndStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.matchBean(in: "花魁")?.shotsCount, 5)
     }
 
+    func testDeletedBeanDoesNotResurrectOnRestartBackfill() {
+        let dir = makeTempDir()
+        let store = BeanEquipmentStore(directoryURL: dir)
+        let brewRecord = CoffeeRecord(
+            id: "brew-20261125-001",
+            beanName: "咸芝士低因",
+            beanWeightG: 18.5,
+            yieldG: 36.5,
+            extractionTimeS: 27.0,
+            recordType: .brewReport
+        )
+
+        // 1. Initial brew record creates the bean card
+        let created = store.upsertBeanFromBrewRecord(brewRecord)
+        XCTAssertNotNil(created)
+        XCTAssertNotNil(store.matchBean(in: "咸芝士低因"))
+
+        // 2. User deletes the bean card
+        if let id = created?.id {
+            store.deleteBean(id: id)
+        }
+        XCTAssertNil(store.matchBean(in: "咸芝士低因"))
+
+        // 3. Simulated app restart: reload store and run backfillBeansFromRecords
+        let restartedStore = BeanEquipmentStore(directoryURL: dir)
+        let addedOnRestart = restartedStore.backfillBeansFromRecords([brewRecord])
+        XCTAssertEqual(addedOnRestart, 0, "Deleted bean must NOT be resurrected by startup backfill")
+        XCTAssertNil(restartedStore.matchBean(in: "咸芝士低因"))
+
+        // 4. Explicitly re-adding the bean later (e.g. restocking/scanning) clears the dismissal
+        let readded = restartedStore.addOrUpdateBean(
+            BeanEntry(id: "bean-restock", shortAliases: ["咸芝士低因"], fullName: "咸芝士低因")
+        )
+        XCTAssertEqual(restartedStore.matchBean(in: "咸芝士低因")?.id, readded.id)
+    }
+
     // MARK: - Equipment profile merging
 
     func testEquipmentMergeIsDuplicateFreeAndPersists() {

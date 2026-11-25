@@ -245,6 +245,7 @@ public final class BeanEquipmentStore: @unchecked Sendable {
         } else {
             library.beans.insert(normalized, at: 0)
         }
+        Self.clearDismissedNames(for: normalized, in: &library)
         writeLibraryLocked(library)
         return normalized
     }
@@ -278,13 +279,52 @@ public final class BeanEquipmentStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         var library = loadLibraryLocked()
-        let before = library.beans.count
-        library.beans.removeAll { ids.contains($0.id) }
-        let removed = before - library.beans.count
-        if removed > 0 {
-            writeLibraryLocked(library)
+        let toRemove = library.beans.filter { ids.contains($0.id) }
+        guard !toRemove.isEmpty else { return 0 }
+        for bean in toRemove {
+            Self.recordDismissedNames(for: bean, in: &library)
         }
-        return removed
+        library.beans.removeAll { ids.contains($0.id) }
+        writeLibraryLocked(library)
+        return toRemove.count
+    }
+
+    private static func normalizedDismissKey(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func recordDismissedNames(for bean: BeanEntry, in library: inout BeanEquipmentLibrary) {
+        var existing = Set(library.dismissedBeanNames.map(normalizedDismissKey))
+        let candidates = [bean.fullName] + bean.shortAliases
+        for raw in candidates {
+            let key = normalizedDismissKey(raw)
+            guard !key.isEmpty, !existing.contains(key) else { continue }
+            existing.insert(key)
+            library.dismissedBeanNames.append(key)
+        }
+        if library.dismissedBeanNames.count > 200 {
+            library.dismissedBeanNames = Array(library.dismissedBeanNames.suffix(200))
+        }
+    }
+
+    private static func clearDismissedNames(for bean: BeanEntry, in library: inout BeanEquipmentLibrary) {
+        let keys = Set(([bean.fullName] + bean.shortAliases).map(normalizedDismissKey).filter { !$0.isEmpty })
+        guard !keys.isEmpty else { return }
+        library.dismissedBeanNames.removeAll { keys.contains(normalizedDismissKey($0)) }
+    }
+
+    private static func isBeanNameDismissed(_ rawName: String, in library: BeanEquipmentLibrary) -> Bool {
+        let key = normalizedDismissKey(rawName)
+        guard !key.isEmpty else { return false }
+        let trimmedSuffix = key.replacingOccurrences(of: "咖啡豆", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        for dismissed in library.dismissedBeanNames {
+            let d = normalizedDismissKey(dismissed)
+            guard !d.isEmpty else { continue }
+            if d == key || (!trimmedSuffix.isEmpty && d == trimmedSuffix) {
+                return true
+            }
+        }
+        return false
     }
 
     @discardableResult
@@ -387,7 +427,8 @@ public final class BeanEquipmentStore: @unchecked Sendable {
         return normalized
     }
 
-    /// Backfills any real user brew records whose recognized bean is not yet in the bean library.
+    /// Backfills any real user brew records whose recognized bean is not yet in the bean library,
+    /// skipping beans that the user has explicitly deleted so they never reappear after app restart.
     @discardableResult
     public func backfillBeansFromRecords(_ records: [CoffeeRecord]) -> Int {
         let sampleRecordPrefixes = ["brew-20261115-", "brew-20261114-"]
@@ -396,6 +437,10 @@ public final class BeanEquipmentStore: @unchecked Sendable {
             if sampleRecordPrefixes.contains(where: { record.id.hasPrefix($0) }) { continue }
             guard let name = record.beanName?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !name.isEmpty else { continue }
+            let currentLibrary = loadLibrary()
+            if Self.isBeanNameDismissed(name, in: currentLibrary) {
+                continue
+            }
             if matchBean(in: name) == nil {
                 if upsertBeanFromBrewRecord(record) != nil {
                     added += 1

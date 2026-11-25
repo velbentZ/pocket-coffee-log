@@ -786,10 +786,31 @@ public struct EquipmentProfile: Codable, Equatable, Sendable {
 public struct BeanEquipmentLibrary: Codable, Equatable, Sendable {
     public var beans: [BeanEntry]
     public var equipment: EquipmentProfile
+    /// Normalized names/aliases of beans explicitly deleted by the user so startup
+    /// record backfill never resurrects a deleted bean card across app restarts.
+    public var dismissedBeanNames: [String]
 
-    public init(beans: [BeanEntry] = [], equipment: EquipmentProfile = EquipmentProfile()) {
+    enum CodingKeys: String, CodingKey {
+        case beans
+        case equipment
+        case dismissedBeanNames = "dismissed_bean_names"
+    }
+
+    public init(
+        beans: [BeanEntry] = [],
+        equipment: EquipmentProfile = EquipmentProfile(),
+        dismissedBeanNames: [String] = []
+    ) {
         self.beans = beans
         self.equipment = equipment
+        self.dismissedBeanNames = dismissedBeanNames
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.beans = try c.decodeIfPresent([BeanEntry].self, forKey: .beans) ?? []
+        self.equipment = try c.decodeIfPresent(EquipmentProfile.self, forKey: .equipment) ?? EquipmentProfile()
+        self.dismissedBeanNames = try c.decodeIfPresent([String].self, forKey: .dismissedBeanNames) ?? []
     }
 }
 
