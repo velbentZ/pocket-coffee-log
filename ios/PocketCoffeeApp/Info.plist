@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>$(DEVELOPMENT_LANGUAGE)</string>
-  <key>CFBundleDisplayName</key><string>Pocket Coffee</string>
+  <key>CFBundleDisplayName</key><string>萃镜</string>
   <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
@@ -37,11 +37,12 @@
       <string>com.dji.velbent.PocketCoffeeLog</string>
       <key>CFBundleURLSchemes</key>
       <array>
+        <string>brewlens</string>
         <string>pocketcoffee</string>
       </array>
     </dict>
   </array>
-  <key>NSLocalNetworkUsageDescription</key><string>可选：用于将端侧生成的咖啡报告同步至局域网内的 Mac 服务。</string>
+  <key>NSLocalNetworkUsageDescription</key><string>可选：用于将端侧生成的咖啡报告同步至局域网内的 Mac 萃镜 (BrewLens) 桌面中枢。</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsArbitraryLoads</key><false/>

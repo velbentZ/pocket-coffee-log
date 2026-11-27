@@ -801,7 +801,7 @@ private struct XiaohongshuCoverPosterView: View {
             VStack(alignment: .leading, spacing: 10) {
                 // Header ribbon
                 HStack {
-                    Text(record.recordType == .equipmentProfile ? "HOME COFFEE BAR · 器具档案" : "POCKET COFFEE · 今日萃取")
+                    Text(record.recordType == .equipmentProfile ? "BREWLENS 萃镜 · 器具档案" : "BREWLENS 萃镜 · 今日萃取")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                         .tracking(1.0)
                         .foregroundStyle(CoffeeTheme.cremaAccent)
@@ -1042,7 +1042,7 @@ private struct XiaohongshuKeyframeCardView: View {
                         .lineLimit(2)
 
                     HStack {
-                        Text("POCKET COFFEE · \(record.beanName ?? "咖啡日记")")
+                        Text("BREWLENS 萃镜 · \(record.beanName ?? "咖啡日记")")
                             .font(.system(size: 8.5, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.7))
                             .lineLimit(1)

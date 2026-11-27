@@ -97,7 +97,7 @@ struct ShortcutsGuideSheet: View {
                 guideStep(1, "打开系统「快捷指令」App，切换到底部「自动化」标签，点击右上角「+」。")
                 guideStep(2, "下滑选择「App」，App 选「相机」，勾选「已关闭」（取消勾选已打开）。")
                 guideStep(3, "选择「立即运行」，关闭「运行时通知」，点击「下一步」。")
-                guideStep(4, "点击「新建空白自动化」→ 搜索「Pocket Coffee」→ 选择「导入最新咖啡视频并生成报告」。")
+                guideStep(4, "点击「新建空白自动化」→ 搜索「萃镜」→ 选择「导入最新咖啡视频并生成报告」。")
                 guideStep(5, "可选优化：点开该操作，把「运行时显示」关掉，切出相机后更丝滑无额外确认弹窗。")
             }
         }
@@ -114,7 +114,7 @@ struct ShortcutsGuideSheet: View {
             VStack(alignment: .leading, spacing: 8) {
                 guideStep(1, "iPhone 15 Pro / 16 Pro：前往系统「设置 → 操作按钮 → 快捷指令」，绑定「导入最新咖啡视频并生成报告」。")
                 guideStep(2, "Siri 语音：录完视频后直接说「嘿 Siri，导入最新咖啡视频」即可自动触发。")
-                guideStep(3, "URL 深链备用：在任意快捷指令中添加「打开 URL」并填入 pocketcoffee://import-latest。")
+                guideStep(3, "URL 深链备用：在任意快捷指令中添加「打开 URL」并填入 brewlens://import-latest。")
             }
         }
         .padding(14)
@@ -202,11 +202,11 @@ struct ShortcutsGuideSheet: View {
 
             Button {
                 #if canImport(UIKit)
-                UIPasteboard.general.string = "pocketcoffee://import-latest"
+                UIPasteboard.general.string = "brewlens://import-latest"
                 #endif
-                feedbackText = "已复制深链：pocketcoffee://import-latest"
+                feedbackText = "已复制深链：brewlens://import-latest"
             } label: {
-                Label("复制备用触发深链 (pocketcoffee://import-latest)", systemImage: "doc.on.doc")
+                Label("复制备用触发深链 (brewlens://import-latest)", systemImage: "doc.on.doc")
                     .font(.caption)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 9)

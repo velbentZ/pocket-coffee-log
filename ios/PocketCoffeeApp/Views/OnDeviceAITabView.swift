@@ -239,7 +239,7 @@ struct OnDeviceAITabView: View {
                 .font(.headline)
                 .foregroundStyle(CoffeeTheme.cremaLight)
 
-            Text("可选功能：开启后，端侧生成新报告或设备建档时，会将结构化参数同步推送至局域网内的 Mac Pocket Coffee Log 桌面中枢（POST /api/ingest/process）。")
+            Text("可选功能：开启后，端侧生成新报告或设备建档时，会将结构化参数同步推送至局域网内的 Mac 萃镜 (BrewLens) 桌面中枢（POST /api/ingest/process）。")
                 .font(.caption)
                 .foregroundStyle(CoffeeTheme.mutedText)
 

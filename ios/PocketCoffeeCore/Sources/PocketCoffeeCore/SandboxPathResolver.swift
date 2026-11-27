@@ -151,7 +151,8 @@ public enum DeepLinkValidator {
               !raw.contains("\r"),
               !raw.contains("\n"),
               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              comps.scheme?.lowercased() == "pocketcoffee",
+              let scheme = comps.scheme?.lowercased(),
+              (scheme == "brewlens" || scheme == "pocketcoffee"),
               comps.user == nil,
               comps.password == nil
         else {

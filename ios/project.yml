@@ -33,7 +33,7 @@ targets:
     info:
       path: PocketCoffeeApp/Info.plist
       properties:
-        CFBundleDisplayName: Pocket Coffee
+        CFBundleDisplayName: 萃镜
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -52,8 +52,9 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: com.dji.velbent.PocketCoffeeLog
             CFBundleURLSchemes:
+              - brewlens
               - pocketcoffee
-        NSLocalNetworkUsageDescription: 可选：用于将生成的咖啡报告同步至局域网内的 Mac Pocket Coffee Log 中枢 (:8788)。
+        NSLocalNetworkUsageDescription: 可选：用于将生成的咖啡报告同步至局域网内的 Mac 萃镜 (BrewLens) 桌面中枢 (:8788)。
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
           NSAllowsLocalNetworking: true

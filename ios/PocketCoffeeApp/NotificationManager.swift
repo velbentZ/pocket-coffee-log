@@ -60,11 +60,11 @@ final class AppNotificationManager: NSObject, @preconcurrency UNUserNotification
         let center = UNUserNotificationCenter.current()
         let granted = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
         guard granted else {
-            return "未获得通知权限，请在系统「设置 → Pocket Coffee → 通知」中开启允许通知。"
+            return "未获得通知权限，请在系统「设置 → 萃镜 → 通知」中开启允许通知。"
         }
 
         let content = UNMutableNotificationContent()
-        content.title = "☕️ Pocket Coffee 通知测试成功"
+        content.title = "☕️ 萃镜 (BrewLens) 通知测试成功"
         if let targetRecord {
             let label = targetRecord.beanName ?? "最近一条报告"
             content.body = "点击此通知将直接跳转到「\(label)」报告详情页。"

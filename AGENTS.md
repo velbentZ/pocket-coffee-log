@@ -1,4 +1,4 @@
-# Pocket Coffee Log — Project Guide (AGENTS.md)
+# 萃镜 · BrewLens — Project Guide (AGENTS.md)
 
 ## Quick File Map
 - `server/app.py`: Local HTTP/API server (`:8788`), serves `static/` via `SimpleHTTPRequestHandler`.

@@ -124,7 +124,7 @@ function buildPosterCanvas(recordId) {
   ctx.fill();
   ctx.fillStyle = '#1a120e';
   ctx.font = 'bold 18px -apple-system, PingFang SC, sans-serif';
-  ctx.fillText(isEquip ? '⚙️ POCKET COFFEE STUDIO · 居家咖啡角装备档案' : '☕️ POCKET COFFEE STUDIO · 每日咖啡打卡', 84, 86);
+  ctx.fillText(isEquip ? '⚙️ BREWLENS 萃镜 · 居家咖啡角装备档案' : '☕️ BREWLENS 萃镜 · 每日咖啡打卡', 84, 86);
 
   ctx.fillStyle = '#a8988e';
   ctx.font = '18px -apple-system, PingFang SC, sans-serif';
@@ -420,7 +420,7 @@ function buildPosterCanvas(recordId) {
   ctx.fillText(`记录编号: ${rec.id}   |   时间: ${rec.created_at}`, 68, 1130);
   ctx.textAlign = 'right';
   ctx.fillStyle = '#d4a373';
-  ctx.fillText('Pocket Coffee Studio · LAN STA :8088', 832, 1130);
+  ctx.fillText('BrewLens 萃镜 · On-Device Coffee Studio', 832, 1130);
   ctx.textAlign = 'left';
 
   return { canvas, rec };
@@ -466,7 +466,7 @@ async function nativeSystemShare(recordId) {
       const file = new File([blob], `${rec.id}-poster.png`, { type: 'image/png' });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
-          title: rec.bean_name || 'Pocket Coffee Studio 报告',
+          title: rec.bean_name || '萃镜 · BrewLens 咖啡报告',
           text: shareText,
           files: [file],
         });
@@ -474,7 +474,7 @@ async function nativeSystemShare(recordId) {
         return;
       }
       await navigator.share({
-        title: rec.bean_name || 'Pocket Coffee Studio 报告',
+        title: rec.bean_name || '萃镜 · BrewLens 咖啡报告',
         text: shareText,
       });
       showToast('📤 已调起系统原生分享面板');

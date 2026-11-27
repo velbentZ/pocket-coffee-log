@@ -1,6 +1,6 @@
-# ☕️ Pocket Coffee Studio (`pocket-coffee-log`)
+# ☕️ 萃镜 · BrewLens
 
-**基于 DJI Osmo Pocket 4 Pro (`eagle4_hg224`) / Pocket 3 内部 STA 局域网实测接入、语音自动唤醒启停与多模态 AI 的全自动咖啡制作记录与社交分享系统**
+**不限拍摄设备、100% 端侧离线多模态 AI 的全流程咖啡萃取分析、豆库赏味期管理、多品牌器具档案与小红书精排分享工作室（支持 iPhone / iPad / DJI Pocket / GoPro / Mac 本地桌面中枢）**
 
 ---
 
